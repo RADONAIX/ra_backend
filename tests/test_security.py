@@ -9,7 +9,9 @@ import pytest
 
 from app.core.security import (
     create_access_token,
+    create_refresh_token,
     decode_access_token,
+    decode_token,
     hash_password,
     verify_password,
 )
@@ -46,3 +48,19 @@ def test_jwt_tampered_rejected():
         decode_access_token(token + "tamper")
     # touch time import to avoid lint flagging unused in some configs
     assert time.time() > 0
+
+
+def test_refresh_token_carries_session_claims():
+    token = create_refresh_token("user-9", session_id="sess-1", jti="jti-abc")
+    payload = decode_token(token)
+    assert payload["type"] == "refresh"
+    assert payload["sub"] == "user-9"
+    assert payload["sid"] == "sess-1"
+    assert payload["jti"] == "jti-abc"
+
+
+def test_access_and_refresh_token_types_differ():
+    access = decode_token(create_access_token("u1"))
+    refresh = decode_token(create_refresh_token("u1", session_id="s", jti="j"))
+    assert access["type"] == "access"
+    assert refresh["type"] == "refresh"

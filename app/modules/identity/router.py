@@ -2,21 +2,66 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 
 from app.core.deps import CurrentUser, DbSession, PageParams, Principal, require
+from app.core.middleware import client_ip
 from app.core.rbac import PermKey
 from app.modules.identity import schemas, service
 
 router = APIRouter(tags=["identity"])
 
 
+def _client_meta(request: Request) -> tuple[str | None, str | None]:
+    return request.headers.get("user-agent"), client_ip(request)
+
+
 # --- Auth ------------------------------------------------------------------
 @router.post("/auth/login", response_model=schemas.LoginResponse)
-async def login(payload: schemas.LoginRequest, db: DbSession) -> schemas.LoginResponse:
-    token, user = await service.authenticate(db, payload.email, payload.password)
-    await service.record_audit(db, actor=user.email, action="Signed in", target=user.id)
-    return schemas.LoginResponse(token=token, user=service.to_auth_user(user))
+async def login(
+    payload: schemas.LoginRequest, request: Request, db: DbSession
+) -> schemas.LoginResponse:
+    ua, ip = _client_meta(request)
+    access, refresh, user = await service.authenticate(
+        db, payload.email, payload.password, user_agent=ua, ip=ip
+    )
+    await service.record_audit(
+        db, actor=user.email, actor_id=user.id, action="Signed in", target=user.id
+    )
+    return schemas.LoginResponse(
+        token=access, refreshToken=refresh, user=service.to_auth_user(user)
+    )
+
+
+@router.post("/auth/refresh", response_model=schemas.TokenPair)
+async def refresh(
+    payload: schemas.RefreshRequest, request: Request, db: DbSession
+) -> schemas.TokenPair:
+    ua, ip = _client_meta(request)
+    access, new_refresh = await service.refresh_session(
+        db, payload.refreshToken, user_agent=ua, ip=ip
+    )
+    return schemas.TokenPair(token=access, refreshToken=new_refresh)
+
+
+@router.post("/auth/logout", response_model=schemas.ActionResult)
+async def logout(principal: CurrentUser, db: DbSession) -> schemas.ActionResult:
+    await service.revoke_session(db, principal.session_id)
+    await service.record_audit(
+        db, actor=principal.email, actor_id=principal.id, action="Signed out"
+    )
+    return schemas.ActionResult(ok=True, detail="Signed out.")
+
+
+@router.post("/auth/change-password", response_model=schemas.ActionResult)
+async def change_password(
+    payload: schemas.ChangePasswordRequest, principal: CurrentUser, db: DbSession
+) -> schemas.ActionResult:
+    await service.change_password(db, principal.id, payload.currentPassword, payload.newPassword)
+    await service.record_audit(
+        db, actor=principal.email, actor_id=principal.id, action="Changed password"
+    )
+    return schemas.ActionResult(ok=True, detail="Password updated.")
 
 
 @router.get("/auth/me", response_model=schemas.AuthUser)
@@ -45,7 +90,9 @@ async def create_user(
     principal: Principal = Depends(require(PermKey.USER_MANAGEMENT, "edit")),
 ) -> schemas.UserRow:
     user = await service.create_user(db, payload)
-    await service.record_audit(db, actor=principal.email, action="Created user", target=user.id)
+    await service.record_audit(
+        db, actor=principal.email, actor_id=principal.id, action="Created user", target=user.id
+    )
     return service.to_user_row(user)
 
 
@@ -57,7 +104,9 @@ async def update_user(
     principal: Principal = Depends(require(PermKey.USER_MANAGEMENT, "edit")),
 ) -> schemas.UserRow:
     user = await service.update_user(db, user_id, payload)
-    await service.record_audit(db, actor=principal.email, action="Updated user", target=user.id)
+    await service.record_audit(
+        db, actor=principal.email, actor_id=principal.id, action="Updated user", target=user.id
+    )
     return service.to_user_row(user)
 
 
@@ -82,7 +131,11 @@ async def update_role_permissions(
 ) -> schemas.RoleRow:
     role = await service.update_role_permissions(db, role_id, payload.permissions)
     await service.record_audit(
-        db, actor=principal.email, action="Updated role permissions", target=role_id
+        db,
+        actor=principal.email,
+        actor_id=principal.id,
+        action="Updated role permissions",
+        target=role_id,
     )
     return service.to_role_row(role)
 
@@ -94,7 +147,9 @@ async def upsert_role(
     principal: Principal = Depends(require(PermKey.ROLE_MANAGEMENT, "edit")),
 ) -> schemas.RoleRow:
     role = await service.upsert_role(db, payload)
-    await service.record_audit(db, actor=principal.email, action="Saved role", target=role.id)
+    await service.record_audit(
+        db, actor=principal.email, actor_id=principal.id, action="Saved role", target=role.id
+    )
     return service.to_role_row(role)
 
 

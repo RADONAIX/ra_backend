@@ -33,11 +33,32 @@ class AuthUser(BaseModel):
     avatar: str | None = None
     status: str = "Active"
     lastLogin: datetime | None = None
+    mustResetPassword: bool = False
 
 
 class LoginResponse(BaseModel):
-    token: str
+    token: str  # access token
+    refreshToken: str
     user: AuthUser
+
+
+class RefreshRequest(BaseModel):
+    refreshToken: str = Field(min_length=1)
+
+
+class TokenPair(BaseModel):
+    token: str  # access token
+    refreshToken: str
+
+
+class ChangePasswordRequest(BaseModel):
+    currentPassword: str = Field(min_length=1)
+    newPassword: str = Field(min_length=8)
+
+
+class ActionResult(BaseModel):
+    ok: bool
+    detail: str | None = None
 
 
 # --- Users -----------------------------------------------------------------
@@ -65,6 +86,8 @@ class UserCreate(BaseModel):
     phone: str | None = None
     department: str | None = None
     status: str = "Active"
+    # Force the user to change their password on first login.
+    mustResetPassword: bool = False
 
 
 class UserUpdate(BaseModel):

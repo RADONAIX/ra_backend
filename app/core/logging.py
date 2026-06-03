@@ -14,6 +14,10 @@ from contextvars import ContextVar
 import structlog
 
 request_id_ctx: ContextVar[str | None] = ContextVar("request_id", default=None)
+# Populated by middleware so audit logging can attribute who/where without
+# threading the Request object through every service call.
+client_ip_ctx: ContextVar[str | None] = ContextVar("client_ip", default=None)
+user_agent_ctx: ContextVar[str | None] = ContextVar("user_agent", default=None)
 
 
 def _add_request_id(_logger, _method_name, event_dict):

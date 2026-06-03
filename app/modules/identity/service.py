@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 
+import jwt
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import AuthenticationError, ConflictError, NotFoundError
+from app.core.logging import client_ip_ctx, request_id_ctx, user_agent_ctx
 from app.core.rbac import ROLE_LABELS, default_permissions_for
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    hash_password,
+    verify_password,
+)
 from app.modules.identity import schemas
-from app.modules.identity.models import AuditLog, Role, User
+from app.modules.identity.models import AuditLog, Role, User, UserSession
 
 
 def _initials(name: str) -> str:
@@ -41,6 +51,7 @@ def to_auth_user(user: User) -> schemas.AuthUser:
         avatar=user.avatar or _initials(user.full_name),
         status=user.status,
         lastLogin=user.last_login,
+        mustResetPassword=user.must_reset_password,
     )
 
 
@@ -77,13 +88,20 @@ async def record_audit(
     actor: str,
     action: str,
     target: str | None = None,
+    actor_id: str | None = None,
     meta: dict | None = None,
 ) -> None:
+    """Write an audit entry, auto-enriched with the request's IP / user-agent /
+    request-id captured by middleware (no need to pass the Request around)."""
     db.add(
         AuditLog(
             actor=actor,
+            actor_id=actor_id,
             action=action,
             target=target,
+            ip_address=client_ip_ctx.get(),
+            user_agent=user_agent_ctx.get(),
+            request_id=request_id_ctx.get(),
             meta=meta or {},
             at=datetime.now(UTC),
         )
@@ -107,20 +125,165 @@ async def list_audit(db: AsyncSession, *, limit: int, offset: int) -> list[schem
     ]
 
 
-# --- Auth ------------------------------------------------------------------
-async def authenticate(db: AsyncSession, email: str, password: str) -> tuple[str, User]:
+# --- Auth: tokens & sessions ----------------------------------------------
+def _tokens_for_session(user: User, session_id: str, refresh_jti: str) -> tuple[str, str]:
+    access = create_access_token(
+        user.id, extra_claims={"email": user.email, "role": user.role_id, "sid": session_id}
+    )
+    refresh = create_refresh_token(user.id, session_id=session_id, jti=refresh_jti)
+    return access, refresh
+
+
+async def _issue_session(
+    db: AsyncSession, user: User, *, user_agent: str | None, ip: str | None
+) -> tuple[str, str]:
+    now = datetime.now(UTC)
+    session_id = str(uuid.uuid4())
+    refresh_jti = uuid.uuid4().hex
+    db.add(
+        UserSession(
+            id=session_id,
+            user_id=user.id,
+            refresh_jti=refresh_jti,
+            user_agent=user_agent,
+            ip_address=ip,
+            issued_at=now,
+            expires_at=now + timedelta(minutes=settings.refresh_token_expire_minutes),
+            last_seen_at=now,
+        )
+    )
+    await db.flush()
+    return _tokens_for_session(user, session_id, refresh_jti)
+
+
+async def authenticate(
+    db: AsyncSession,
+    email: str,
+    password: str,
+    *,
+    user_agent: str | None = None,
+    ip: str | None = None,
+) -> tuple[str, str, User]:
+    """Verify credentials (with lockout) and open a session.
+
+    Returns (access_token, refresh_token, user). Raises AuthenticationError on
+    bad credentials, disabled account, or active lockout.
+    """
+    now = datetime.now(UTC)
     user = (
         await db.execute(select(User).where(func.lower(User.email) == email.lower()))
     ).scalar_one_or_none()
-    if user is None or not verify_password(password, user.hashed_password):
+
+    # Generic message so we don't reveal which emails exist.
+    if user is None:
         raise AuthenticationError("Invalid email or password.")
+    if user.locked_until and user.locked_until > now:
+        raise AuthenticationError(
+            "Account temporarily locked due to failed login attempts. Try again later."
+        )
     if not user.is_active:
         raise AuthenticationError("Your account has been disabled. Please contact administrator.")
 
-    user.last_login = datetime.now(UTC)
+    if not verify_password(password, user.hashed_password):
+        user.failed_login_count += 1
+        if user.failed_login_count >= settings.max_failed_logins:
+            user.locked_until = now + timedelta(minutes=settings.lockout_minutes)
+            user.failed_login_count = 0
+            # Commit so the lockout persists despite the error we raise next
+            # (the request's session would otherwise roll back on exception).
+            await db.commit()
+            raise AuthenticationError(
+                "Too many failed attempts. Account locked for "
+                f"{settings.lockout_minutes} minutes."
+            )
+        await db.commit()
+        raise AuthenticationError("Invalid email or password.")
+
+    # Success — reset lockout state and open a session.
+    user.failed_login_count = 0
+    user.locked_until = None
+    user.last_login = now
+    access, refresh = await _issue_session(db, user, user_agent=user_agent, ip=ip)
+    return access, refresh, user
+
+
+async def refresh_session(
+    db: AsyncSession,
+    refresh_token: str,
+    *,
+    user_agent: str | None = None,
+    ip: str | None = None,
+) -> tuple[str, str]:
+    """Validate a refresh token and rotate it, returning a fresh token pair.
+
+    Implements refresh-token rotation with reuse detection: presenting a stale
+    (already-rotated) refresh token revokes the whole session.
+    """
+    try:
+        payload = decode_token(refresh_token)
+    except jwt.PyJWTError as exc:
+        raise AuthenticationError("Invalid or expired refresh token.") from exc
+    if payload.get("type") != "refresh":
+        raise AuthenticationError("Not a refresh token.")
+
+    session_id = payload.get("sid")
+    jti = payload.get("jti")
+    session = (
+        await db.execute(select(UserSession).where(UserSession.id == session_id))
+    ).scalar_one_or_none()
+    now = datetime.now(UTC)
+    if session is None or session.revoked_at is not None or session.expires_at <= now:
+        raise AuthenticationError("Session is no longer valid. Please sign in again.")
+    if session.refresh_jti != jti:
+        # A previously-rotated token was replayed → likely theft. Kill the session.
+        # Commit so the revocation persists despite the error we raise next.
+        session.revoked_at = now
+        await db.commit()
+        raise AuthenticationError("Refresh token reuse detected. Session revoked.")
+
+    user = (
+        await db.execute(select(User).where(User.id == session.user_id))
+    ).scalar_one_or_none()
+    if user is None or not user.is_active:
+        session.revoked_at = now
+        await db.commit()
+        raise AuthenticationError("Account is no longer active.")
+
+    new_jti = uuid.uuid4().hex
+    session.refresh_jti = new_jti
+    session.last_seen_at = now
+    session.expires_at = now + timedelta(minutes=settings.refresh_token_expire_minutes)
+    if user_agent:
+        session.user_agent = user_agent
+    if ip:
+        session.ip_address = ip
     await db.flush()
-    token = create_access_token(user.id, extra_claims={"email": user.email, "role": user.role_id})
-    return token, user
+    return _tokens_for_session(user, session.id, new_jti)
+
+
+async def revoke_session(db: AsyncSession, session_id: str | None) -> None:
+    if not session_id:
+        return
+    session = (
+        await db.execute(select(UserSession).where(UserSession.id == session_id))
+    ).scalar_one_or_none()
+    if session is not None and session.revoked_at is None:
+        session.revoked_at = datetime.now(UTC)
+        await db.flush()
+
+
+async def change_password(
+    db: AsyncSession, user_id: str, current_password: str, new_password: str
+) -> User:
+    user = await get_user(db, user_id)
+    if not verify_password(current_password, user.hashed_password):
+        raise AuthenticationError("Current password is incorrect.")
+    user.hashed_password = hash_password(new_password)
+    user.password_changed_at = datetime.now(UTC)
+    user.must_reset_password = False
+    await db.flush()
+    await db.refresh(user)
+    return user
 
 
 async def get_user(db: AsyncSession, user_id: str) -> User:
@@ -167,6 +330,8 @@ async def create_user(db: AsyncSession, payload: schemas.UserCreate) -> User:
         status=payload.status,
         hashed_password=hash_password(payload.password),
         avatar=_initials(payload.fullName),
+        must_reset_password=payload.mustResetPassword,
+        password_changed_at=datetime.now(UTC),
     )
     db.add(user)
     await db.flush()
@@ -192,6 +357,7 @@ async def update_user(db: AsyncSession, user_id: str, payload: schemas.UserUpdat
         user.status = payload.status
     if payload.password:
         user.hashed_password = hash_password(payload.password)
+        user.password_changed_at = datetime.now(UTC)
     await db.flush()
     await db.refresh(user)
     return user

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(default="change-me-in-production", min_length=8)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 12  # 12h
+    refresh_token_expire_minutes: int = 60 * 24 * 14  # 14 days
+    # Account lockout after too many failed logins.
+    max_failed_logins: int = 5
+    lockout_minutes: int = 15
     # First-run bootstrap admin (created by seed if no users exist).
     bootstrap_admin_email: str = "admin@radonaix.io"
     bootstrap_admin_password: str = "ChangeMe!123"
