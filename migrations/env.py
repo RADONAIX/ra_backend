@@ -42,9 +42,13 @@ def run_migrations_online() -> None:
     )
     with connectable.connect() as connection:
         # Ensure the dedicated schema exists and is the active search_path so
-        # unqualified DDL + the alembic_version table live in it.
+        # unqualified DDL + the alembic_version table live in it. Commit this
+        # setup first so Alembic owns (and commits) its own transaction —
+        # otherwise SQLAlchemy 2.0 autobegin leaves a transaction open that
+        # Alembic won't commit, and the whole migration rolls back on close.
         connection.exec_driver_sql(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         connection.exec_driver_sql(f'SET search_path TO "{schema}", public')
+        connection.commit()
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

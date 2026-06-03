@@ -7,14 +7,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
 WORKDIR /app
 
-# Install build deps for asyncpg/psycopg2/bcrypt wheels if needed.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install uv from PyPI (avoids ghcr.io, which some corporate TLS proxies block).
+# No apt needed: all dependencies ship prebuilt linux wheels, so there is no
+# compiler/system-lib requirement at build time.
+RUN pip install --no-cache-dir uv
 
 # Layer-cache dependency install separately from app code.
 COPY pyproject.toml ./
@@ -31,11 +29,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r app && useradd -r -g app app \
-    && mkdir -p /var/lib/radonaix/reports && chown -R app:app /var/lib/radonaix
+# No apt needed: psycopg2-binary bundles libpq; the healthcheck uses Python.
+# Create a home dir for the app user (gunicorn's control server writes to $HOME).
+RUN groupadd -r app && useradd -r -g app -m -d /home/app app \
+    && mkdir -p /var/lib/radonaix/reports && chown -R app:app /var/lib/radonaix /home/app
+ENV HOME=/home/app
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
@@ -46,7 +44,7 @@ USER app
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:8000/api/health || exit 1
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=4).status==200 else 1)"]
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 # Default: API server. Override command for the worker (see docker-compose).
