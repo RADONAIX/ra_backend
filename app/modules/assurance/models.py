@@ -10,19 +10,31 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base, TimestampMixin
+
+# Allowed values, enforced both in Pydantic schemas (→ 422) and via DB CHECKs.
+CASE_SEVERITIES = ("low", "medium", "high", "critical")
+CASE_STATUSES = ("Open", "In Progress", "Resolved", "Closed", "Cancelled")
 
 
 def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+def _in_list(column: str, values: tuple[str, ...]) -> str:
+    return f"{column} IN (" + ", ".join(f"'{v}'" for v in values) + ")"
+
+
 class Case(Base, TimestampMixin):
     __tablename__ = "cases"
+    __table_args__ = (
+        CheckConstraint(_in_list("severity", CASE_SEVERITIES), name="chk_cases_severity"),
+        CheckConstraint(_in_list("status", CASE_STATUSES), name="chk_cases_status"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     # Human-friendly reference, e.g. CASE-2031.

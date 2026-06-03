@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.logging import get_logger
@@ -93,6 +94,23 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=_envelope("http_error", str(exc.detail)),
             headers=getattr(exc, "headers", None),
         )
+
+    @app.exception_handler(IntegrityError)
+    async def _integrity(_: Request, exc: IntegrityError) -> JSONResponse:
+        # DB constraint hit (check / unique / FK). Classify for a clean 4xx
+        # rather than a 500. The DBAPI error class name distinguishes them.
+        origin = type(getattr(exc, "orig", exc)).__name__.lower()
+        if "unique" in origin:
+            code, http = "conflict", status.HTTP_409_CONFLICT
+            message = "A record with these values already exists."
+        elif "foreignkey" in origin:
+            code, http = "conflict", status.HTTP_409_CONFLICT
+            message = "Referenced record does not exist."
+        else:  # check / not-null / other constraint
+            code, http = "validation_failed", 422
+            message = "A field value violates a database constraint."
+        log.warning("integrity_error", origin=origin)
+        return JSONResponse(status_code=http, content=_envelope(code, message))
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:

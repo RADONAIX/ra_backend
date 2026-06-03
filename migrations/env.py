@@ -21,6 +21,14 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _include_object(obj, name, type_, reflected, compare_to):
+    # Alembic's own bookkeeping table sits in the search_path and would
+    # otherwise show up as a spurious "removed table" during autogenerate/check.
+    if type_ == "table" and name == "alembic_version":
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     context.configure(
         url=settings.app_database_url_sync,
@@ -54,6 +62,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_type=True,
             version_table_schema=schema,
+            include_object=_include_object,
         )
         with context.begin_transaction():
             context.run_migrations()

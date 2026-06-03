@@ -9,6 +9,10 @@ integrates read-only with the existing **ra-platform** data pipeline
 > This repository is intended to live in its **own** GitHub repo, separate from
 > the UI. See [Pushing to a new repo](#pushing-to-a-new-github-repo).
 
+> 📦 **Setting this up on a new server or machine?** Follow the plain-language,
+> step-by-step **[Setup Guide](docs/SETUP.md)** (Docker and manual paths).
+> Database schema details are in **[docs/DATABASE.md](docs/DATABASE.md)**.
+
 ---
 
 ## Architecture

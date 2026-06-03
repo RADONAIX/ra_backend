@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+# Allowed enums — kept in sync with the DB CHECK constraints on `cases`.
+CaseSeverity = Literal["low", "medium", "high", "critical"]
+CaseStatus = Literal["Open", "In Progress", "Resolved", "Closed", "Cancelled"]
 
 
 # --- Reconciliation (read from ClickHouse) ---------------------------------
@@ -59,8 +64,8 @@ class CaseDetail(CaseRow):
 class CaseCreate(BaseModel):
     title: str = Field(min_length=1)
     description: str = ""
-    severity: str = "medium"
-    status: str = "Open"
+    severity: CaseSeverity = "medium"
+    status: CaseStatus = "Open"
     owner: str | None = None
     linkedTxnId: str | None = None
     estimatedImpact: float | None = None
@@ -69,8 +74,8 @@ class CaseCreate(BaseModel):
 class CaseUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
-    severity: str | None = None
-    status: str | None = None
+    severity: CaseSeverity | None = None
+    status: CaseStatus | None = None
     owner: str | None = None
     estimatedImpact: float | None = None
 
