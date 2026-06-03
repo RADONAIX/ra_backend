@@ -36,7 +36,7 @@ Grouped by the module that owns them (the backend is a modular monolith).
 | # | Table | Purpose | Key columns |
 |---|---|---|---|
 | 1 | `roles` | RBAC roles + per-feature `{view,edit}` permission matrix (JSONB) | `id` (slug PK), `permissions` |
-| 2 | `users` | Application users; auth + profile + role assignment | `id` (uuid PK), `email` (unique), `hashed_password`, `role_id`→roles |
+| 2 | `users` | Application users; auth + profile + role assignment | `id` (uuid PK), `email` (unique), `hashed_password`, `role_id`→roles, `deleted_at` (soft-delete) |
 | 3 | `audit_logs` | Append-only trail of user/system actions | `id`, `actor`, `action`, `target`, `at` |
 
 ### assurance module

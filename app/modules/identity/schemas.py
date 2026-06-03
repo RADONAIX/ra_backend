@@ -123,6 +123,21 @@ class RolePermissionsUpdate(BaseModel):
     permissions: PermissionMap
 
 
+class RoleUpdate(BaseModel):
+    """Update a role's metadata. Permissions go via PUT /roles/{id}/permissions."""
+
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    status: str | None = None
+
+
+# --- Permissions catalog ---------------------------------------------------
+class PermissionInfo(BaseModel):
+    key: str
+    label: str
+    path: str
+
+
 # --- Audit -----------------------------------------------------------------
 class AuditRow(BaseModel):
     id: str

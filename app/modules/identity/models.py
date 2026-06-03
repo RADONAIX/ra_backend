@@ -44,6 +44,8 @@ class User(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="Active", nullable=False)
     avatar: Mapped[str | None] = mapped_column(String(16), nullable=True)
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Soft-delete marker (doc §4). Soft-deleted users are hidden and cannot auth.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Failed-login / account-lockout state.
     failed_login_count: Mapped[int] = mapped_column(
@@ -64,7 +66,7 @@ class User(Base, TimestampMixin):
 
     @property
     def is_active(self) -> bool:
-        return self.status.lower() == "active"
+        return self.deleted_at is None and self.status.lower() == "active"
 
 
 class UserSession(Base):

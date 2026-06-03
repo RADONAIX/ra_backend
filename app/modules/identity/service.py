@@ -292,7 +292,11 @@ async def change_password(
 
 
 async def get_user(db: AsyncSession, user_id: str) -> User:
-    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    user = (
+        await db.execute(
+            select(User).where(User.id == user_id, User.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
     if user is None:
         raise NotFoundError("User not found.")
     return user
@@ -303,7 +307,11 @@ async def list_users(db: AsyncSession, *, limit: int, offset: int) -> list[schem
     rows = (
         (
             await db.execute(
-                select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+                select(User)
+                .where(User.deleted_at.is_(None))
+                .order_by(User.created_at.desc())
+                .limit(limit)
+                .offset(offset)
             )
         )
         .scalars()
@@ -368,7 +376,38 @@ async def update_user(db: AsyncSession, user_id: str, payload: schemas.UserUpdat
     return user
 
 
+async def soft_delete_user(db: AsyncSession, user_id: str) -> User:
+    """Soft-delete a user: mark deleted_at and revoke all their sessions.
+
+    The user is then hidden from listings and can no longer authenticate
+    (User.is_active is False once deleted_at is set).
+    """
+    user = await get_user(db, user_id)  # 404 if already deleted / missing
+    now = datetime.now(UTC)
+    user.deleted_at = now
+    # Revoke every active session so existing tokens stop working immediately.
+    sessions = (
+        await db.execute(
+            select(UserSession).where(
+                UserSession.user_id == user_id, UserSession.revoked_at.is_(None)
+            )
+        )
+    ).scalars().all()
+    for session in sessions:
+        session.revoked_at = now
+    await db.flush()
+    return user
+
+
 # --- Roles -----------------------------------------------------------------
+async def list_permissions() -> list[schemas.PermissionInfo]:
+    """Read-only catalog of feature permission keys (feature-matrix RBAC model)."""
+    from app.core.rbac import PERMISSION_CATALOG
+
+    return [
+        schemas.PermissionInfo(key=key.value, label=label, path=path)
+        for key, label, path in PERMISSION_CATALOG
+    ]
 async def list_roles(db: AsyncSession) -> list[schemas.RoleRow]:
     rows = (await db.execute(select(Role).order_by(Role.created_at))).scalars().all()
     return [to_role_row(r) for r in rows]
@@ -401,6 +440,21 @@ async def upsert_role(db: AsyncSession, payload: schemas.RoleUpsert) -> Role:
 async def update_role_permissions(db: AsyncSession, role_id: str, permissions: dict) -> Role:
     role = await _require_role(db, role_id)
     role.permissions = permissions
+    await db.flush()
+    await db.refresh(role)
+    return role
+
+
+async def update_role(db: AsyncSession, role_id: str, payload: schemas.RoleUpdate) -> Role:
+    """Update role metadata (name/description/status). Permissions are updated
+    separately via update_role_permissions."""
+    role = await _require_role(db, role_id)
+    if payload.name is not None:
+        role.name = payload.name
+    if payload.description is not None:
+        role.description = payload.description
+    if payload.status is not None:
+        role.status = payload.status
     await db.flush()
     await db.refresh(role)
     return role

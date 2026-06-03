@@ -39,6 +39,20 @@ ROLE_LABELS: dict[str, str] = {
     RoleSlug.VIEWER: "Report Viewer",
 }
 
+# Catalog of feature permission keys → (human label, UI path). Mirrors
+# PERMISSION_KEYS in the UI (ui/radon-ai-vision/src/lib/auth.tsx) and backs the
+# read-only GET /permissions endpoint. Each key carries {view, edit} actions.
+PERMISSION_CATALOG: list[tuple[PermKey, str, str]] = [
+    (PermKey.DASHBOARD, "Dashboard & KPIs", "/"),
+    (PermKey.REPORTS, "Reports & Certified Exports", "/reports"),
+    (PermKey.WORKBENCH, "Assurance Workbench", "/workbench"),
+    (PermKey.CASE_MANAGEMENT, "Case Management", "/cases"),
+    (PermKey.PIPELINES, "Pipelines & Job Monitor", "/pipelines"),
+    (PermKey.USER_MANAGEMENT, "User Management", "/users"),
+    (PermKey.ROLE_MANAGEMENT, "Role Management", "/roles"),
+    (PermKey.SETTINGS, "Settings", "/system-config"),
+]
+
 PermissionMap = dict[str, dict[str, bool]]
 
 

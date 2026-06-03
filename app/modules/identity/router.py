@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, status
 
 from app.core.deps import CurrentUser, DbSession, PageParams, Principal, require
+from app.core.errors import AppError
 from app.core.middleware import client_ip
 from app.core.rbac import PermKey
 from app.modules.identity import schemas, service
@@ -70,6 +71,13 @@ async def me(principal: CurrentUser, db: DbSession) -> schemas.AuthUser:
     return service.to_auth_user(user)
 
 
+@router.get("/permissions", response_model=list[schemas.PermissionInfo])
+async def list_permissions(
+    _: Principal = Depends(require(PermKey.ROLE_MANAGEMENT, "view")),
+) -> list[schemas.PermissionInfo]:
+    return await service.list_permissions()
+
+
 # --- Users -----------------------------------------------------------------
 users_router = APIRouter(prefix="/users", tags=["users"])
 
@@ -110,6 +118,31 @@ async def update_user(
     return service.to_user_row(user)
 
 
+@users_router.get("/{user_id}", response_model=schemas.UserRow)
+async def get_user(
+    user_id: str,
+    db: DbSession,
+    _: Principal = Depends(require(PermKey.USER_MANAGEMENT, "view")),
+) -> schemas.UserRow:
+    user = await service.get_user(db, user_id)
+    return service.to_user_row(user)
+
+
+@users_router.delete("/{user_id}", response_model=schemas.ActionResult)
+async def delete_user(
+    user_id: str,
+    db: DbSession,
+    principal: Principal = Depends(require(PermKey.USER_MANAGEMENT, "edit")),
+) -> schemas.ActionResult:
+    if user_id == principal.id:
+        raise AppError("You cannot delete your own account.")
+    user = await service.soft_delete_user(db, user_id)
+    await service.record_audit(
+        db, actor=principal.email, actor_id=principal.id, action="Deleted user", target=user.id
+    )
+    return schemas.ActionResult(ok=True, detail="User deleted.")
+
+
 # --- Roles -----------------------------------------------------------------
 roles_router = APIRouter(prefix="/roles", tags=["roles"])
 
@@ -120,6 +153,20 @@ async def list_roles(
     _: Principal = Depends(require(PermKey.ROLE_MANAGEMENT, "view")),
 ) -> list[schemas.RoleRow]:
     return await service.list_roles(db)
+
+
+@roles_router.patch("/{role_id}", response_model=schemas.RoleRow)
+async def update_role(
+    role_id: str,
+    payload: schemas.RoleUpdate,
+    db: DbSession,
+    principal: Principal = Depends(require(PermKey.ROLE_MANAGEMENT, "edit")),
+) -> schemas.RoleRow:
+    role = await service.update_role(db, role_id, payload)
+    await service.record_audit(
+        db, actor=principal.email, actor_id=principal.id, action="Updated role", target=role.id
+    )
+    return service.to_role_row(role)
 
 
 @roles_router.put("/{role_id}/permissions", response_model=schemas.RoleRow)

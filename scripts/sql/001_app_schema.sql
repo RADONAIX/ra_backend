@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS administration.users (
     status          varchar(32)  NOT NULL DEFAULT 'Active',
     avatar          varchar(16),
     last_login      timestamptz,
+    deleted_at      timestamptz,                -- soft-delete marker (NULL = active)
     created_at      timestamptz  NOT NULL DEFAULT now(),
     updated_at      timestamptz  NOT NULL DEFAULT now(),
     CONSTRAINT pk_users PRIMARY KEY (id),
