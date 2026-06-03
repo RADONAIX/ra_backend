@@ -1,0 +1,81 @@
+name: radonaix-backend
+
+services:
+  api:
+    build: .
+    image: radonaix/backend:latest
+    env_file: .env
+    environment:
+      APP_DB_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      RUN_MIGRATIONS: "true"
+      RUN_SEED: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - reports:/var/lib/radonaix/reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: radonaix/backend:latest
+    env_file: .env
+    environment:
+      APP_DB_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      RUN_MIGRATIONS: "false"
+      RUN_SEED: "false"
+    command: ["celery", "-A", "app.workers.celery_app:celery", "worker", "--loglevel=info", "--concurrency=4"]
+    volumes:
+      - reports:/var/lib/radonaix/reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${APP_DB_NAME:-radonaix_app}
+      POSTGRES_USER: ${APP_DB_USER:-radonaix}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-radonaix}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APP_DB_USER:-radonaix} -d ${APP_DB_NAME:-radonaix_app}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  reports:

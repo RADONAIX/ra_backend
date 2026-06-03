@@ -1,0 +1,133 @@
+"""Application configuration via pydantic-settings.
+
+All settings are environment-driven (12-factor). See ``.env.example`` for the
+full list. Values are grouped by concern but kept flat for simple env mapping.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field, PostgresDsn, computed_field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # --- General -----------------------------------------------------------
+    environment: Literal["development", "staging", "production"] = "development"
+    debug: bool = False
+    project_name: str = "RADONAIX Revenue Assurance API"
+    api_prefix: str = "/api"
+    log_level: str = "INFO"
+    log_json: bool = True
+
+    # CORS — comma-separated origins, or "*" for all (dev only).
+    cors_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8080"
+
+    # --- Auth / JWT --------------------------------------------------------
+    jwt_secret: str = Field(default="change-me-in-production", min_length=8)
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60 * 12  # 12h
+    # First-run bootstrap admin (created by seed if no users exist).
+    bootstrap_admin_email: str = "admin@radonaix.io"
+    bootstrap_admin_password: str = "ChangeMe!123"
+
+    # --- App database (NEW — owns users/roles/cases/reports/audit) ---------
+    app_db_host: str = "localhost"
+    app_db_port: int = 5432
+    app_db_name: str = "radonaix_app"
+    app_db_user: str = "radonaix"
+    app_db_password: str = "radonaix"
+    # Dedicated application schema (set as connection search_path).
+    app_db_schema: str = "administration"
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_echo: bool = False
+
+    # --- Redis (cache + Celery broker/result backend) ----------------------
+    redis_url: str = "redis://localhost:6379/0"
+    celery_broker_url: str = "redis://localhost:6379/1"
+    celery_result_backend: str = "redis://localhost:6379/2"
+
+    # --- ra-platform integration: ClickHouse (read-only recon data) --------
+    clickhouse_enabled: bool = True
+    clickhouse_host: str = "localhost"
+    clickhouse_port: int = 8123
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "rafms"
+
+    # --- ra-platform integration: Postgres (read-only file_log/batches) ----
+    ra_pg_enabled: bool = True
+    ra_pg_host: str = "localhost"
+    ra_pg_port: int = 5432
+    ra_pg_name: str = "rafms"
+    ra_pg_user: str = "postgres"
+    ra_pg_password: str = "postgres"
+
+    # --- ra-platform integration: Airflow REST (pipeline control) ----------
+    airflow_enabled: bool = False
+    airflow_base_url: str = "http://localhost:8081/api/v1"
+    airflow_username: str = "airflow"
+    airflow_password: str = "airflow"
+
+    # --- Reporting ---------------------------------------------------------
+    reports_dir: str = "/var/lib/radonaix/reports"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cors_origin_list(self) -> list[str]:
+        raw = self.cors_origins.strip()
+        if raw == "*":
+            return ["*"]
+        return [o.strip() for o in raw.split(",") if o.strip()]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def app_database_url(self) -> str:
+        """Async SQLAlchemy URL for the app database."""
+        return str(
+            PostgresDsn.build(
+                scheme="postgresql+asyncpg",
+                username=self.app_db_user,
+                password=self.app_db_password,
+                host=self.app_db_host,
+                port=self.app_db_port,
+                path=self.app_db_name,
+            )
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def app_database_url_sync(self) -> str:
+        """Sync URL (used by Alembic migrations)."""
+        return str(
+            PostgresDsn.build(
+                scheme="postgresql+psycopg2",
+                username=self.app_db_user,
+                password=self.app_db_password,
+                host=self.app_db_host,
+                port=self.app_db_port,
+                path=self.app_db_name,
+            )
+        )
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
