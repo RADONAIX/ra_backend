@@ -61,7 +61,7 @@ integrates read-only with the existing **ra-platform** data pipeline
 | Data | PostgreSQL, SQLAlchemy 2.0 (async), Alembic |
 | Async/jobs | Redis, Celery |
 | Analytics read | ClickHouse (`clickhouse-connect`) |
-| Auth | JWT (PyJWT) + bcrypt, RBAC matrix |
+| Auth | JWT (PyJWT) + **Argon2id** (bcrypt verify-only, see [SECURITY.md](SECURITY.md)), RBAC matrix |
 | Observability | structlog (JSON), Prometheus `/metrics`, `/api/health[/ready]` |
 
 ---

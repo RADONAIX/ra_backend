@@ -1,26 +1,68 @@
-"""Password hashing (bcrypt) and JWT issuance/verification."""
+"""Password hashing (Argon2id, bcrypt verify-only) and JWT issuance.
+
+Argon2id is the production hashing algorithm. bcrypt is retained ONLY to verify
+legacy hashes created before the migration; logging in with a bcrypt hash
+transparently upgrades it to Argon2id (rehash-on-login).
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import bcrypt
+import bcrypt  # NOTE: remove once all stored hashes start with "$argon2".
 import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 from app.core.config import settings
+
+# Argon2id parameters (OWASP-aligned): 3 iterations, 64 MiB, 4 lanes.
+_ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
+
+_BCRYPT_PREFIXES = ("$2a$", "$2b$", "$2y$")
 
 
 # --- Passwords -------------------------------------------------------------
 def hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+    """Always returns an Argon2id hash."""
+    return _ph.hash(plain)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
+    """Verify a password against an Argon2id or (legacy) bcrypt hash.
+
+    Detects the algorithm by hash prefix. Never raises — returns False on any
+    mismatch or malformed/unknown hash.
+    """
+    if not hashed:
+        return False
     try:
-        return bcrypt.checkpw(plain.encode(), hashed.encode())
+        if hashed.startswith("$argon2"):
+            return _ph.verify(hashed, plain)
+        if hashed.startswith(_BCRYPT_PREFIXES):
+            return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except (VerifyMismatchError, InvalidHashError, VerificationError):
+        return False
     except (ValueError, TypeError):
         return False
+    return False
+
+
+def needs_rehash(hashed: str) -> bool:
+    """True if the stored hash should be re-computed with the current settings.
+
+    Legacy bcrypt (or unknown) hashes always need rehashing to Argon2id; an
+    Argon2id hash needs it only if its parameters differ from the current ones.
+    """
+    if not hashed:
+        return True
+    if hashed.startswith("$argon2"):
+        try:
+            return _ph.check_needs_rehash(hashed)
+        except InvalidHashError:
+            return True
+    return True  # bcrypt or unknown → migrate to Argon2id
 
 
 # --- JWT -------------------------------------------------------------------

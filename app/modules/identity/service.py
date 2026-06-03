@@ -18,6 +18,7 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
     hash_password,
+    needs_rehash,
     verify_password,
 )
 from app.modules.identity import schemas
@@ -203,6 +204,10 @@ async def authenticate(
     user.failed_login_count = 0
     user.locked_until = None
     user.last_login = now
+    # Transparently upgrade a legacy (bcrypt) or stale-param hash to Argon2id.
+    # Persisted in the same transaction as the login-success audit event.
+    if needs_rehash(user.hashed_password):
+        user.hashed_password = hash_password(password)
     access, refresh = await _issue_session(db, user, user_agent=user_agent, ip=ip)
     return access, refresh, user
 
