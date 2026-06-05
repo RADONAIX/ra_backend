@@ -71,11 +71,14 @@ class Settings(BaseSettings):
 
     # --- ra-platform integration: Postgres (read-only file_log/batches) ----
     ra_pg_enabled: bool = True
-    ra_pg_host: str = "localhost"
+    ra_pg_host: str = "10.200.37.142"
     ra_pg_port: int = 5432
-    ra_pg_name: str = "rafms"
+    ra_pg_name: str = "rafms_db"
     ra_pg_user: str = "postgres"
     ra_pg_password: str = "postgres"
+    # Schema holding the Pipeline Map batch-log / file-log tables. Table names
+    # per DAG/stream live in code registries (operations.service).
+    ra_pg_batchlog_schema: str = "public"
 
     # --- ra-platform integration: Airflow REST (pipeline control) ----------
     airflow_enabled: bool = False

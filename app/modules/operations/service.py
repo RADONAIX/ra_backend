@@ -19,11 +19,117 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFoundError, UpstreamUnavailableError
 from app.core.logging import get_logger
-from app.integrations import airflow, clickhouse
+from app.integrations import airflow, clickhouse, ra_postgres
 from app.modules.operations import schemas
 from app.modules.operations.models import Decoder, PipelineAlert, SystemConfig
 
 log = get_logger("operations")
+
+
+# --- Pipeline Map: batch logs (read-only, rafms_db.public.*_batch_log) -------
+# (dag, stream, table) — schema-qualified by settings.ra_pg_batchlog_schema.
+# Full design is 6 tables (AIR/SDP/MSC x Raw/Processed); only live ones enabled.
+BATCHLOG_SOURCES: list[tuple[str, str, str]] = [
+    ("AIR", "Raw", "batch_log"),  # TODO: rename -> air_raw_batch_log
+    ("AIR", "Processed", "air_processed_batch_log"),
+    # ("SDP", "Raw", "sdp_raw_batch_log"),             # under development
+    # ("SDP", "Processed", "sdp_processed_batch_log"),
+    # ("MSC", "Raw", "msc_raw_batch_log"),
+    # ("MSC", "Processed", "msc_processed_batch_log"),
+]
+
+
+async def list_batch_sources(*, hours: int = 12) -> list[schemas.BatchSource]:
+    """Per-batch pipeline logs for the UI Pipeline Map, grouped by DAG + stream,
+    read live from ra-platform's Postgres. Each source returns batches whose
+    ``batch_start_time`` is within the last ``hours``. Each table is queried
+    independently so a missing / under-development / unreachable source yields
+    an empty group instead of failing the whole response (no 500)."""
+    from app.core.config import settings
+
+    schema = settings.ra_pg_batchlog_schema
+    out: list[schemas.BatchSource] = []
+    for dag, stream, table in BATCHLOG_SOURCES:
+        try:
+            rows = await ra_postgres.query(
+                f'SELECT * FROM {schema}."{table}" '
+                f"WHERE batch_start_time >= now() - make_interval(hours => :hours) "
+                f"ORDER BY batch_start_time DESC LIMIT 5000",  # window is the filter; LIMIT is a safety cap
+                {"hours": hours},
+            )
+            out.append(
+                schemas.BatchSource(
+                    dag=dag,
+                    stream=stream,
+                    rows=[schemas.BatchLog(**row) for row in rows],
+                )
+            )
+        except UpstreamUnavailableError:
+            log.info("batchlog_source_unavailable", dag=dag, stream=stream, table=table)
+            out.append(schemas.BatchSource(dag=dag, stream=stream, rows=[]))
+    return out
+
+
+# --- Export module: per-batch file logs (rafms_db.public.*_file_log) ---------
+# batch_id prefix -> (table, projection). The projection is the SELECT list that
+# normalises each table's columns to the UI FileLog shape. ``"*"`` means the
+# table already matches FileLog (processed); raw tables need explicit aliases.
+# Maps file_log's (raw) columns onto the UI FileLog shape. NOTE: targets the
+# CURRENT `file_log` schema (uses file_date, split actual_* counts). When it is
+# renamed to air_raw_file_log (which has file_timestamp / actual_record_count),
+# revisit these aliases.
+_RAW_FILE_PROJECTION = (
+    "id, filename, batch_id, file_node_id AS node_id, "
+    "file_sequence_number AS sequence_number, file_date AS file_timestamp, '' AS file_type, "
+    "file_status, integrity_flag, archived_at, archived_path, "
+    "decoder_start_time, decoder_end_time, "
+    "CASE WHEN decoding_status THEN 'SUCCESS' ELSE 'FAILED' END AS decoder_status, "
+    "refill_csv_creation_status AS csv_creation_status, "
+    "refill_db_loading_status AS db_loading_status, "
+    "ingestion_start_time, ingestion_end_time, ingestion_status, "
+    "expected_record_count, "
+    "(COALESCE(actual_refill_record_count,0) + COALESCE(actual_adjustment_record_count,0) "
+    "+ COALESCE(actual_error_record_count,0)) AS actual_record_count, "
+    "attempt_count AS retry_count, last_error_step, "
+    "last_error_message AS error_message, insert_timestamp AS created_at, "
+    "quarantined_at, quarantine_reason, quarantine_batch_dir, quarantine_count, retried_at"
+)
+
+# prefix -> (table, projection_sql)
+FILE_SOURCES: list[tuple[str, str, str]] = [
+    ("AIR_PROCESSED_", "air_processed_file_log", "*"),
+    ("AIR_RAW_", "file_log", _RAW_FILE_PROJECTION),  # TODO: rename -> air_raw_file_log
+    # ("SDP_RAW_", "sdp_raw_file_log", _RAW_FILE_PROJECTION),       # under development
+    # ("SDP_PROCESSED_", "sdp_processed_file_log", "*"),
+    # ("MSC_RAW_", "msc_raw_file_log", _RAW_FILE_PROJECTION),
+    # ("MSC_PROCESSED_", "msc_processed_file_log", "*"),
+]
+
+
+async def list_batch_files(batch_id: str) -> list[schemas.FileLog]:
+    """All files for one batch, for the Export module's drill-down. The source
+    table is resolved from the ``batch_id`` prefix (e.g. ``AIR_PROCESSED_`` ->
+    air_processed_file_log). Returns ``[]`` for an unknown prefix or when the
+    upstream is unavailable (never 500s)."""
+    from app.core.config import settings
+
+    key = batch_id.upper()
+    match = next((s for s in FILE_SOURCES if key.startswith(s[0])), None)
+    if match is None:
+        log.info("batch_files_unknown_prefix", batch_id=batch_id)
+        return []
+    _prefix, table, projection = match
+    qualified = f'{settings.ra_pg_batchlog_schema}."{table}"'
+    try:
+        rows = await ra_postgres.query(
+            f"SELECT {projection} FROM {qualified} "
+            f"WHERE batch_id = :batch_id ORDER BY sequence_number LIMIT 100000",
+            {"batch_id": batch_id},
+        )
+        return [schemas.FileLog(**row) for row in rows]
+    except UpstreamUnavailableError:
+        log.info("batch_files_unavailable", batch_id=batch_id, table=table)
+        return []
 
 
 def _db_ident() -> str:

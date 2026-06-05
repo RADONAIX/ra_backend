@@ -49,6 +49,22 @@ async def retries(
     return await service.get_retries(db)
 
 
+@pipelines_router.get("/batches", response_model=list[schemas.BatchSource])
+async def batches(
+    hours: int = Query(default=12, ge=1, le=168),
+    _: Principal = Depends(require(PermKey.PIPELINES, "view")),
+) -> list[schemas.BatchSource]:
+    return await service.list_batch_sources(hours=hours)
+
+
+@pipelines_router.get("/batches/{batch_id}/files", response_model=list[schemas.FileLog])
+async def batch_files(
+    batch_id: str,
+    _: Principal = Depends(require(PermKey.PIPELINES, "view")),
+) -> list[schemas.FileLog]:
+    return await service.list_batch_files(batch_id)
+
+
 @pipelines_router.post("/jobs/{job_id}/retry", response_model=schemas.ActionResult)
 async def retry_job(
     job_id: str, principal: Principal = Depends(require(PermKey.PIPELINES, "edit"))
