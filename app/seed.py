@@ -39,61 +39,24 @@ _ROLES = [
     (RoleSlug.VIEWER, "Read-only access to dashboards, reports and pipelines.", "Active"),
 ]
 
+# Only the real admin account is seeded. Demo users were removed — do not
+# re-add them (production runs with a single bootstrap admin).
 _USERS = [
     (
-        "Daniel Okafor",
+        "Administrator",
         "admin@radonaix.io",
         "+1 415 555 0100",
         "Platform Ops",
         RoleSlug.ADMIN,
         "Active",
     ),
-    (
-        "Aarav Mehta",
-        "aarav.mehta@radonaix.io",
-        "+91 98765 43210",
-        "Finance Operations",
-        RoleSlug.RA_LEAD,
-        "Active",
-    ),
-    (
-        "Priya Shah",
-        "priya.shah@radonaix.io",
-        "+91 99887 12345",
-        "Assurance",
-        RoleSlug.ANALYST,
-        "Active",
-    ),
-    (
-        "Mei Tanaka",
-        "viewer@radonaix.io",
-        "+81 90 1234 5678",
-        "Compliance",
-        RoleSlug.VIEWER,
-        "Active",
-    ),
-    (
-        "Liam O'Connor",
-        "liam.o@radonaix.io",
-        "+353 87 555 1212",
-        "Engineering",
-        RoleSlug.ANALYST,
-        "Disabled",
-    ),
 ]
 
-_DECODERS = [
-    ("DEC-ASN1-v3", "ASN.1 CDR Decoder", "3.2.1", "Enabled", "12k/s"),
-    ("DEC-JSON-v2", "JSON Event Decoder", "2.5.0", "Enabled", "28k/s"),
-    ("DEC-CSV-v1", "Legacy CSV Decoder", "1.8.4", "Disabled", "—"),
-]
+# Demo decoders / alerts removed — these tables stay empty until real rows are
+# created at runtime (no hardcoded/dummy seed data).
+_DECODERS: list[tuple[str, str, str, str, str]] = []
 
-_ALERTS = [
-    ("ALT-2231", "high", "Validation", "Schema drift on field call_duration", "Open"),
-    ("ALT-2230", "medium", "Reconciliation", "Latency above SLA (18m vs 15m)", "Acknowledged"),
-    ("ALT-2229", "low", "Decoding", "Throughput degraded 4% on DEC-ASN1-v3", "Open"),
-    ("ALT-2228", "critical", "File Collection", "Source MSC-EU-3 unreachable", "Open"),
-]
+_ALERTS: list[tuple[str, str, str, str, str]] = []
 
 
 def _initials(name: str) -> str:

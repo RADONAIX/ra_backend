@@ -1,7 +1,11 @@
 """Redis client (cache + lightweight pub/sub).
 
-A single async client is shared process-wide. Used for caching expensive
-ClickHouse aggregations and as a seam for future event publishing.
+NOT YET ACTIVE: this client is not wired into any endpoint yet — no caching or
+pub/sub is performed in the current build. Redis's only live role is as
+Celery's broker/result backend. Kept as the seam for future caching of
+expensive ClickHouse aggregations and event publishing.
+
+A single async client is shared process-wide.
 """
 
 from __future__ import annotations

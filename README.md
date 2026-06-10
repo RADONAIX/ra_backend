@@ -87,7 +87,7 @@ VITE_API_BASE_URL=http://localhost:8000/api
 | Email | Role | Password |
 |---|---|---|
 | admin@radonaix.io | admin | `BOOTSTRAP_ADMIN_PASSWORD` (default `ChangeMe!123`) |
-| aarav.mehta@radonaix.io | ra_lead | `DEMO_PASSWORD` (default `ChangeMe!123`) |
+| admin@radonaix.io | ra_lead | `DEMO_PASSWORD` (default `ChangeMe!123`) |
 | priya.shah@radonaix.io | analyst | `DEMO_PASSWORD` |
 | viewer@radonaix.io | viewer | `DEMO_PASSWORD` |
 

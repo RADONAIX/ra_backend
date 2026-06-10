@@ -1,5 +1,10 @@
 """Celery application instance.
 
+NOT YET ACTIVE: scaffolding for the planned async architecture. The only task
+(`reports.generate`) is no longer enqueued by any endpoint, so the worker has
+nothing to run today and the app functions without it. Activate when adding
+background jobs (report generation, pipeline triggers, scheduled tasks).
+
 Run a worker with:
     celery -A app.workers.celery_app:celery worker --loglevel=info
 """

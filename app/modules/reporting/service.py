@@ -1,89 +1,158 @@
-"""Reporting business logic: list, request (enqueue), fetch for download."""
+"""Reporting business logic: a registry-driven RA report catalog.
+
+Each report is a spec with a live count query and a drill-down query against a
+pre-computed source (BI Postgres matviews in ``rafms.bi_reports`` or ClickHouse
+matviews in ``rafms``). The catalog badge shows the true total count; the
+drill-down returns at most 100 rows; export returns the full set as CSV.
+"""
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+import csv
+import io
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
 
-from app.core.errors import NotFoundError
+from app.core.config import settings
+from app.core.errors import UpstreamUnavailableError
 from app.core.logging import get_logger
+from app.integrations import bi_postgres, clickhouse
 from app.modules.reporting import schemas
-from app.modules.reporting.models import Report
 
 log = get_logger("reporting")
 
+DETAIL_LIMIT = 100
+EXPORT_LIMIT = 1_000_000
 
-def format_bytes(num: int | None) -> str:
-    if not num:
-        return "—"
-    size = float(num)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+# Report registry. `{schema}` is filled from settings.ra_bi_pg_schema (BI PG).
+# detail_sql is the base SELECT (with ORDER BY, NO limit); the limit is applied
+# per use (100 for drill-down, EXPORT_LIMIT for CSV).
+REPORTS: list[dict[str, Any]] = [
+    {
+        "key": "missing_file_sequence",
+        "title": "Missing File Sequence Report",
+        "group": "Files",
+        "available": True,
+        "source": "bi_pg",
+        "count_sql": "SELECT count(*) AS n FROM {schema}.air_file_seq_check WHERE status <> 'Present'",
+        "detail_sql": (
+            "SELECT * FROM {schema}.air_file_seq_check WHERE status <> 'Present' ORDER BY date DESC"
+        ),
+    },
+    {
+        "key": "missing_record_sequence",
+        "title": "Missing Record Sequence Report",
+        "group": "Files",
+        "available": True,
+        "source": "clickhouse",
+        "count_sql": "SELECT sum(missing_count) AS n FROM air_raw_record_sequence_mv",
+        "detail_sql": "SELECT * FROM air_raw_record_sequence_mv ORDER BY missing_count DESC",
+    },
+    # --- Stubs: sources not provided yet (flip available=True + add SQL later) ---
+    {"key": "file_processing", "title": "File Processing Report", "group": "Files", "available": False},
+    {
+        "key": "air_reconciliation",
+        "title": "AIR Reconciliation Report",
+        "group": "Reconciliation",
+        "available": True,
+        "source": "clickhouse",
+        # Findings = reconciliation discrepancies (everything not MATCHED):
+        # AMOUNT_MISMATCH, RAW_ONLY, PROC_ONLY. (Plain MergeTree — no FINAL.)
+        "count_sql": (
+            "SELECT count() AS n FROM air_reconciliation "
+            "WHERE reconciliation_status != 'MATCHED'"
+        ),
+        "detail_sql": (
+            "SELECT reconciliation_status, record_type, "
+            "coalesce(raw_txn_id, proc_txn_id) AS txn_id, "
+            "coalesce(raw_node_id, proc_node_id) AS node_id, "
+            "coalesce(raw_subscriber_num, proc_subscriber_num) AS subscriber_num, "
+            "raw_tran_amt, proc_tran_amt, raw_acc_balance, proc_acc_balance, "
+            "coalesce(raw_filename, proc_filename) AS filename, created_time "
+            "FROM air_reconciliation WHERE reconciliation_status != 'MATCHED' "
+            "ORDER BY created_time DESC"
+        ),
+    },
+    {
+        "key": "sdp_reconciliation",
+        "title": "SDP Reconciliation Report",
+        "group": "Reconciliation",
+        "available": False,
+    },
+    {
+        "key": "msc_reconciliation",
+        "title": "MSC Reconciliation Report",
+        "group": "Reconciliation",
+        "available": False,
+    },
+    {
+        "key": "air_sdp_cross_correlation",
+        "title": "AIR vs SDP Cross Correlation",
+        "group": "Correlation",
+        "available": False,
+    },
+]
+
+_BY_KEY = {r["key"]: r for r in REPORTS}
 
 
-def to_row(r: Report) -> schemas.ReportRow:
-    return schemas.ReportRow(
-        id=r.reference,
-        name=r.name,
-        period=r.period,
-        status=r.status,
-        size=format_bytes(r.size_bytes),
-    )
+def _jsonable(v: Any) -> Any:
+    if isinstance(v, datetime | date):
+        return v.isoformat(sep=" ") if isinstance(v, datetime) else v.isoformat()
+    if isinstance(v, Decimal):
+        return float(v)
+    return v
 
 
-async def list_reports(db: AsyncSession, *, limit: int, offset: int) -> list[schemas.ReportRow]:
-    rows = (
-        (
-            await db.execute(
-                select(Report).order_by(Report.created_at.desc()).limit(limit).offset(offset)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [to_row(r) for r in rows]
+async def _run(source: str, sql: str) -> list[dict[str, Any]]:
+    if source == "bi_pg":
+        return await bi_postgres.query(sql)
+    if source == "clickhouse":
+        return await clickhouse.query(sql)
+    raise UpstreamUnavailableError(f"Unknown report source: {source}")
 
 
-async def _next_reference(db: AsyncSession) -> str:
-    count = (await db.execute(select(func.count(Report.id)))).scalar_one()
-    return f"RPT-{9900 + int(count) + 1}"
+async def _count(report: dict[str, Any]) -> int:
+    sql = report["count_sql"].format(schema=settings.ra_bi_pg_schema)
+    rows = await _run(report["source"], sql)
+    n = rows[0].get("n") if rows else 0
+    return int(n or 0)
 
 
-async def create_report(
-    db: AsyncSession, payload: schemas.ReportCreate, *, requested_by: str
-) -> Report:
-    report = Report(
-        reference=await _next_reference(db),
-        name=payload.name,
-        report_type=payload.reportType,
-        period=payload.period,
-        status="Queued",
-        requested_by=requested_by,
-        params=payload.params,
-    )
-    db.add(report)
-    await db.flush()
-    await db.refresh(report)
+async def _detail_rows(report: dict[str, Any], limit: int) -> tuple[list[str], list[list]]:
+    sql = f"{report['detail_sql'].format(schema=settings.ra_bi_pg_schema)} LIMIT {int(limit)}"
+    rows = await _run(report["source"], sql)
+    if not rows:
+        return [], []
+    columns = list(rows[0].keys())
+    data = [[_jsonable(row.get(c)) for c in columns] for row in rows]
+    return columns, data
 
-    # Enqueue async generation. If the broker is unreachable, the report stays
-    # "Queued" and can be retried; we never fail the request because of it.
+
+async def report_detail(key: str) -> schemas.ReportDetail:
+    report = _BY_KEY.get(key)
+    if report is None or not report.get("available"):
+        title = report["title"] if report else key
+        return schemas.ReportDetail(key=key, title=title, count=None, columns=[], rows=[])
     try:
-        from app.workers.tasks import generate_report
+        count = await _count(report)
+        columns, rows = await _detail_rows(report, DETAIL_LIMIT)
+    except UpstreamUnavailableError:
+        log.info("report_detail_unavailable", key=key)
+        return schemas.ReportDetail(key=key, title=report["title"], count=None, columns=[], rows=[])
+    return schemas.ReportDetail(key=key, title=report["title"], count=count, columns=columns, rows=rows)
 
-        generate_report.delay(report.id)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("report_enqueue_failed", report_id=report.id, error=str(exc))
 
-    return report
-
-
-async def get_report(db: AsyncSession, reference: str) -> Report:
-    report = (
-        await db.execute(select(Report).where(Report.reference == reference))
-    ).scalar_one_or_none()
-    if report is None:
-        raise NotFoundError("Report not found.")
-    return report
+async def report_export_csv(key: str) -> tuple[str, str]:
+    """Return (filename, csv_text) for the full (uncapped) report set."""
+    report = _BY_KEY.get(key)
+    if report is None or not report.get("available"):
+        raise UpstreamUnavailableError("Report is not available for export.")
+    columns, rows = await _detail_rows(report, EXPORT_LIMIT)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    if columns:
+        writer.writerow(columns)
+        writer.writerows(rows)
+    return f"{key}.csv", buf.getvalue()

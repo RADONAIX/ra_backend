@@ -1,33 +1,17 @@
-"""Pydantic schemas for the reporting module."""
+"""Pydantic schemas for the reporting module (RA report catalog)."""
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
-class ReportRow(BaseModel):
-    """Shape consumed by the Reports table (id shown is the reference)."""
+class ReportDetail(BaseModel):
+    """A report's drill-down as a generic table (heterogeneous reports).
 
-    id: str
-    name: str
-    period: str | None = None
-    status: str
-    size: str
+    ``rows`` is capped at 100 by the service; ``count`` is the true total."""
 
-
-class ReportDetail(ReportRow):
-    reportType: str
-    requestedBy: str | None = None
-    checksum: str | None = None
-    error: str | None = None
-    createdAt: datetime
-    completedAt: datetime | None = None
-
-
-class ReportCreate(BaseModel):
-    name: str = Field(min_length=1)
-    reportType: str = "reconciliation"
-    period: str | None = None
-    params: dict = Field(default_factory=dict)
+    key: str
+    title: str
+    count: int | None = None
+    columns: list[str]
+    rows: list[list]

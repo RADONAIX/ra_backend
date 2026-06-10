@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # --- Redis (cache + Celery broker/result backend) ----------------------
+    # NOT YET ACTIVE: scaffolding for the planned async architecture. Redis is
+    # currently only Celery's broker, the cache is unwired, and no Celery task
+    # is enqueued — the app runs without either today. Wire up when adding
+    # background report generation / pipeline triggers / caching.
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
@@ -73,12 +77,18 @@ class Settings(BaseSettings):
     ra_pg_enabled: bool = True
     ra_pg_host: str = "10.200.37.142"
     ra_pg_port: int = 5432
-    ra_pg_name: str = "rafms_db"
+    ra_pg_name: str = "rafms_app"
     ra_pg_user: str = "postgres"
     ra_pg_password: str = "postgres"
-    # Schema holding the Pipeline Map batch-log / file-log tables. Table names
-    # per DAG/stream live in code registries (operations.service).
-    ra_pg_batchlog_schema: str = "public"
+    # Pipeline batch-log / file-log tables now live in per-DAG schemas
+    # (air_schema, sdp_schema, msc_schema). The schema + table names per
+    # DAG/stream live in code registries (operations.service).
+
+    # --- ra-platform integration: BI Postgres (read-only report matviews) ---
+    # Same server/creds as ra_pg above, but a DIFFERENT database (`rafms`) whose
+    # `bi_reports` schema holds the pre-computed report materialized views.
+    ra_bi_pg_name: str = "rafms"
+    ra_bi_pg_schema: str = "bi_reports"
 
     # --- ra-platform integration: Airflow REST (pipeline control) ----------
     airflow_enabled: bool = False
