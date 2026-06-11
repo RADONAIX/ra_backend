@@ -235,9 +235,6 @@ class BatchSource(BaseModel):
 
 
 # --- Export module: per-batch file logs (rafms_db.public.*_file_log) --------
-_INTEGRITY_LABELS = {0: "OK", 1: "ZERO_KB", 2: "DUPLICATE", 3: "CORRUPT", 4: "QUARANTINED"}
-
-
 class FileLog(BaseModel):
     """One file inside a batch. Fields mirror the UI's ``FileLog`` interface
     (src/lib/airFiles.ts). The processed file-log table maps ~1:1; raw tables
@@ -252,7 +249,6 @@ class FileLog(BaseModel):
     node_id: str = ""
     sequence_number: int = 0
     file_timestamp: str = ""
-    file_type: str = ""
     file_status: str = ""
     integrity_flag: str = ""
 
@@ -310,7 +306,6 @@ class FileLog(BaseModel):
         "batch_id",
         "node_id",
         "file_timestamp",
-        "file_type",
         "file_status",
         "archived_at",
         "archived_path",
@@ -344,15 +339,9 @@ class FileLog(BaseModel):
 
     @field_validator("integrity_flag", mode="before")
     @classmethod
-    def _map_integrity(cls, v: object) -> object:
-        # DB stores an int code; UI filters by label. Unknown / NULL → "".
-        if v is None:
-            return ""
-        if isinstance(v, bool):  # guard: bool is a subclass of int
-            return ""
-        if isinstance(v, int):
-            return _INTEGRITY_LABELS.get(v, "")
-        return v
+    def _flag_to_str(cls, v: object) -> object:
+        # Surface the raw DB value as a string — no assumed code→label mapping.
+        return "" if v is None else str(v)
 
     @field_validator("id", mode="before")
     @classmethod

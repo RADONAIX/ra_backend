@@ -16,6 +16,7 @@ from starlette.responses import Response
 
 # Import the models aggregate so every table is registered on Base.metadata.
 import app.models  # noqa: F401
+from app import __version__
 from app.api import api_router
 from app.core.config import settings
 from app.core.database import engine
@@ -46,7 +47,7 @@ async def lifespan(_: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.project_name,
-        version="0.1.0",
+        version=__version__,
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",

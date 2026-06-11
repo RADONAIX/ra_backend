@@ -16,8 +16,6 @@ from app.modules.assurance.models import Case, CaseComment, SavedQuery
 
 log = get_logger("assurance")
 
-_VALID_STATUSES = {"MATCHED", "AMOUNT_MISMATCH", "RAW_ONLY", "PROC_ONLY"}
-
 
 def _ident() -> str:
     return "`" + settings.clickhouse_database.replace("`", "``") + "`"
@@ -74,8 +72,6 @@ async def recon_records(
     where = "1=1"
     params: dict = {}
     if status:
-        if status.upper() not in _VALID_STATUSES:
-            return []
         where = "reconciliation_status = {status:String}"
         params["status"] = status.upper()
     rows = await clickhouse.query(
@@ -243,8 +239,16 @@ async def workbench_stats(db: AsyncSession) -> schemas.WorkbenchStats:
             )
         )
     ).scalar_one()
+    # Real avg resolution time (days) across resolved cases; 0 when none yet.
+    avg_secs = (
+        await db.execute(
+            select(func.avg(func.extract("epoch", Case.updated_at - Case.created_at))).where(
+                Case.status.in_(["Closed", "Resolved"])
+            )
+        )
+    ).scalar_one()
     return schemas.WorkbenchStats(
         openInvestigations=int(open_count),
         closedThisWeek=int(closed),
-        avgResolutionDays=2.4,
+        avgResolutionDays=round(float(avg_secs) / 86400, 1) if avg_secs else 0.0,
     )

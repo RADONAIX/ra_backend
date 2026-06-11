@@ -45,7 +45,9 @@ REPORTS: list[dict[str, Any]] = [
         "available": True,
         "source": "clickhouse",
         "count_sql": "SELECT sum(missing_count) AS n FROM air_processed_record_sequence_check",
-        "detail_sql": "SELECT * FROM air_processed_record_sequence_check ORDER BY missing_count DESC",
+        "detail_sql": (
+            "SELECT * FROM air_processed_record_sequence_check ORDER BY missing_count DESC"
+        ),
     },
     {
         "key": "file_sequence_check",
@@ -77,8 +79,6 @@ REPORTS: list[dict[str, Any]] = [
         "count_sql": "SELECT count(*) AS n FROM air_schema.report_batch_log",
         "detail_sql": "SELECT * FROM air_schema.report_batch_log ORDER BY start_time DESC",
     },
-    # --- Stubs: sources not provided yet (flip available=True + add SQL later) ---
-    {"key": "file_processing", "title": "File Processing Report", "group": "Files", "available": False},
     {
         "key": "air_reconciliation",
         "title": "AIR Reconciliation Report",
@@ -101,24 +101,6 @@ REPORTS: list[dict[str, Any]] = [
             "FROM air_reconciliation WHERE reconciliation_status != 'MATCHED' "
             "ORDER BY created_time DESC"
         ),
-    },
-    {
-        "key": "sdp_reconciliation",
-        "title": "SDP Reconciliation Report",
-        "group": "Reconciliation",
-        "available": False,
-    },
-    {
-        "key": "msc_reconciliation",
-        "title": "MSC Reconciliation Report",
-        "group": "Reconciliation",
-        "available": False,
-    },
-    {
-        "key": "air_sdp_cross_correlation",
-        "title": "AIR vs SDP Cross Correlation",
-        "group": "Correlation",
-        "available": False,
     },
 ]
 
@@ -169,7 +151,9 @@ async def report_detail(key: str) -> schemas.ReportDetail:
     except UpstreamUnavailableError:
         log.info("report_detail_unavailable", key=key)
         return schemas.ReportDetail(key=key, title=report["title"], count=None, columns=[], rows=[])
-    return schemas.ReportDetail(key=key, title=report["title"], count=count, columns=columns, rows=rows)
+    return schemas.ReportDetail(
+        key=key, title=report["title"], count=count, columns=columns, rows=rows
+    )
 
 
 async def report_export_csv(key: str) -> tuple[str, str]:

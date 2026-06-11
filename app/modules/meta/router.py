@@ -63,7 +63,7 @@ async def dashboard_kpis(
     summary = await assurance_service.recon_summary(hours=24)
     matched_amount = summary.total - summary.amountMismatch - summary.rawOnly - summary.procOnly
     return DashboardKpis(
-        assuredRevenue=round(max(matched_amount, 0) * 1.0, 2),
+        assuredRevenue=round(max(matched_amount, 0), 2),
         matchRate=summary.matchRate,
         openLeakageRisk=summary.estimatedLeakage,
         criticalAlerts=summary.amountMismatch + summary.rawOnly,

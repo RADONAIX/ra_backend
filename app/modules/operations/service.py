@@ -12,8 +12,6 @@ so the dashboard stays functional in dev/offline environments.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,7 +49,7 @@ async def list_batch_sources(*, hours: int = 12) -> list[schemas.BatchSource]:
             rows = await ra_postgres.query(
                 f'SELECT * FROM {schema}."{table}" '
                 f"WHERE batch_start_time >= now() - make_interval(hours => :hours) "
-                f"ORDER BY batch_start_time DESC LIMIT 5000",  # window is the filter; LIMIT is a safety cap
+                f"ORDER BY batch_start_time DESC LIMIT 5000",  # window filters; LIMIT is a cap
                 {"hours": hours},
             )
             out.append(
@@ -75,7 +73,7 @@ async def list_batch_sources(*, hours: int = 12) -> list[schemas.BatchSource]:
 # (we surface the refill_* ones as representative).
 _COMMON_FILE_HEAD = (
     "id, filename, batch_id, file_node_id AS node_id, "
-    "file_sequence_number AS sequence_number, file_timestamp, '' AS file_type, "
+    "file_sequence_number AS sequence_number, file_timestamp, "
     "file_status, integrity_flag, archived_at, archived_path, "
     "watcher_start_time, watcher_end_time, watcher_status, "
     "decoder_start_time, decoder_end_time, decoder_status, "
@@ -145,40 +143,6 @@ def _db_ident() -> str:
     return "`" + settings.clickhouse_database.replace("`", "``") + "`"
 
 
-# --- Fallback data (mirrors UI service defaults) ---------------------------
-_FALLBACK_STAGES = [
-    {
-        "key": "collection",
-        "name": "File Collection",
-        "status": "ok",
-        "duration": "1m 12s",
-        "metric": "—",
-    },
-    {"key": "decoding", "name": "Decoding", "status": "ok", "duration": "3m 47s", "metric": "—"},
-    {
-        "key": "validation",
-        "name": "Validation",
-        "status": "ok",
-        "duration": "2m 03s",
-        "metric": "—",
-    },
-    {
-        "key": "reconciliation",
-        "name": "Reconciliation",
-        "status": "ok",
-        "duration": "4m 21s",
-        "metric": "—",
-    },
-    {
-        "key": "reporting",
-        "name": "Report Generation",
-        "status": "ok",
-        "duration": "0m 58s",
-        "metric": "—",
-    },
-]
-
-
 # --- Pipelines: KPIs -------------------------------------------------------
 async def get_kpis(db: AsyncSession) -> schemas.PipelineKpis:
     cfg = await get_or_create_config(db)
@@ -205,10 +169,8 @@ async def get_kpis(db: AsyncSession) -> schemas.PipelineKpis:
             slaBreaches=breaches,
         )
     except UpstreamUnavailableError:
-        log.info("kpis_fallback", reason="clickhouse_unavailable")
-        return schemas.PipelineKpis(
-            throughput="8.4M / hr", avgLatency="12m 21s", failed24h=14, slaBreaches=2
-        )
+        log.info("kpis_unavailable", reason="clickhouse_unavailable")
+        return schemas.PipelineKpis(throughput="—", avgLatency="—", failed24h=0, slaBreaches=0)
 
 
 async def _avg_latency(ident: str) -> str:
@@ -250,14 +212,22 @@ async def get_stages(db: AsyncSession) -> list[schemas.PipelineStage]:
         total = int((rows[0].get("total") if rows else 0) or 0)
         matched = int((rows[0].get("matched") if rows else 0) or 0)
         match_pct = (matched / total * 100) if total else 100.0
-        stages = [dict(s) for s in _FALLBACK_STAGES]
-        stages[3]["metric"] = f"{match_pct:.2f}% match"
-        stages[3]["status"] = "ok" if match_pct >= 99 else "warning"
-        stages[1]["metric"] = f"{total:,} records"
-        return [schemas.PipelineStage(**s) for s in stages]
+        # Only values backed by real ra-platform data are reported; per-stage
+        # durations have no upstream source, so they're left blank, not faked.
+        return [
+            schemas.PipelineStage(
+                key="decoding", name="Decoding", status="ok",
+                duration="", metric=f"{total:,} records",
+            ),
+            schemas.PipelineStage(
+                key="reconciliation", name="Reconciliation",
+                status="ok" if match_pct >= 100 else "warning",
+                duration="", metric=f"{match_pct:.2f}% match",
+            ),
+        ]
     except UpstreamUnavailableError:
-        log.info("stages_fallback", reason="clickhouse_unavailable")
-        return [schemas.PipelineStage(**s) for s in _FALLBACK_STAGES]
+        log.info("stages_unavailable", reason="clickhouse_unavailable")
+        return []
 
 
 # --- Pipelines: runs -------------------------------------------------------
@@ -279,36 +249,15 @@ async def get_runs(db: AsyncSession, *, limit: int) -> list[schemas.PipelineRun]
                 batch=str(r.get("recon_run_id")),
                 start=r.get("recon_start_time"),
                 end=r.get("recon_end_time"),
-                status="Completed" if r.get("status") == "COMPLETED" else str(r.get("status")),
+                status=str(r.get("status") or ""),
                 records=0,
                 failed=0,
             )
             for r in rows
         ]
     except UpstreamUnavailableError:
-        log.info("runs_fallback", reason="clickhouse_unavailable")
-        return [
-            schemas.PipelineRun(
-                id="RUN-90112",
-                source="MSC-EU-1",
-                batch="BATCH-441A",
-                start=datetime(2026, 6, 2, 9, 2, tzinfo=UTC),
-                end=datetime(2026, 6, 2, 9, 18, tzinfo=UTC),
-                status="Completed",
-                records=1284322,
-                failed=12,
-            ),
-            schemas.PipelineRun(
-                id="RUN-90110",
-                source="BSS-CRM",
-                batch="BATCH-441C",
-                start=datetime(2026, 6, 2, 8, 30, tzinfo=UTC),
-                end=datetime(2026, 6, 2, 8, 51, tzinfo=UTC),
-                status="Failed",
-                records=312044,
-                failed=4012,
-            ),
-        ]
+        log.info("runs_unavailable", reason="clickhouse_unavailable")
+        return []
 
 
 # --- Pipelines: alerts (DB-owned) ------------------------------------------
@@ -345,26 +294,16 @@ async def acknowledge_alert(db: AsyncSession, alert_id: str, actor: str) -> sche
 
 # --- Pipelines: retries ----------------------------------------------------
 async def get_retries(db: AsyncSession) -> list[schemas.RetryJob]:
-    # No canonical retry queue in ra-platform yet; surface failed alerts as
-    # actionable retry candidates, falling back to representative data.
+    # No canonical retry queue in ra-platform yet; surface open alerts as
+    # actionable retry candidates. Empty when there are none.
     alerts = (
         (await db.execute(select(PipelineAlert).where(PipelineAlert.status == "Open")))
         .scalars()
         .all()
     )
-    if alerts:
-        return [
-            schemas.RetryJob(id=a.id, batch="—", stage=a.stage, error=a.message, retryCount=0)
-            for a in alerts
-        ]
     return [
-        schemas.RetryJob(
-            id="JOB-7781",
-            batch="BATCH-441C",
-            stage="Reconciliation",
-            error="Mismatch threshold exceeded (3.4%)",
-            retryCount=1,
-        ),
+        schemas.RetryJob(id=a.id, batch="", stage=a.stage, error=a.message, retryCount=0)
+        for a in alerts
     ]
 
 
