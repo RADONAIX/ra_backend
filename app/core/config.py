@@ -9,8 +9,15 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, computed_field
+from pydantic import Field, PostgresDsn, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Known-insecure defaults that MUST be overridden before running in production.
+_INSECURE_JWT_SECRETS = {
+    "change-me-in-production",
+    "dev-only-change-me-to-a-48char-random-secret-000000000000",
+}
+_INSECURE_ADMIN_PASSWORDS = {"ChangeMe!123"}
 
 
 class Settings(BaseSettings):
@@ -43,6 +50,9 @@ class Settings(BaseSettings):
     # First-run bootstrap admin (created by seed if no users exist).
     bootstrap_admin_email: str = "admin@radonaix.io"
     bootstrap_admin_password: str = "ChangeMe!123"
+    # Per-IP rate limit on the login endpoint (brute-force speed bump).
+    login_rate_limit_max: int = 10
+    login_rate_limit_window_seconds: int = 60
 
     # --- App database (NEW — owns users/roles/cases/reports/audit) ---------
     app_db_host: str = "localhost"
@@ -140,6 +150,29 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @model_validator(mode="after")
+    def _enforce_production_secrets(self) -> Settings:
+        """Fail fast if production is started with default/weak secrets."""
+        if self.environment != "production":
+            return self
+        problems: list[str] = []
+        if (
+            self.jwt_secret in _INSECURE_JWT_SECRETS
+            or self.jwt_secret.startswith("dev-only-change-me")
+            or len(self.jwt_secret) < 32
+        ):
+            problems.append(
+                "JWT_SECRET must be a unique random value of at least 32 characters"
+            )
+        if self.bootstrap_admin_password in _INSECURE_ADMIN_PASSWORDS:
+            problems.append("BOOTSTRAP_ADMIN_PASSWORD must be changed from the default")
+        if problems:
+            raise ValueError(
+                "Refusing to start in production with insecure configuration: "
+                + "; ".join(problems)
+            )
+        return self
 
 
 @lru_cache
