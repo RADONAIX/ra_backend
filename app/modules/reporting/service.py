@@ -30,24 +30,13 @@ EXPORT_LIMIT = 1_000_000
 # per use (100 for drill-down, EXPORT_LIMIT for CSV).
 REPORTS: list[dict[str, Any]] = [
     {
-        "key": "missing_file_sequence",
-        "title": "Missing File Sequence Report",
-        "group": "Files",
-        "available": True,
-        "source": "bi_pg",
-        "count_sql": "SELECT count(*) AS n FROM {schema}.air_file_seq_check WHERE status <> 'Present'",
-        "detail_sql": (
-            "SELECT * FROM {schema}.air_file_seq_check WHERE status <> 'Present' ORDER BY date DESC"
-        ),
-    },
-    {
         "key": "missing_record_sequence",
-        "title": "Missing Record Sequence Report",
+        "title": "Raw Record Sequence check Report",
         "group": "Files",
         "available": True,
         "source": "clickhouse",
-        "count_sql": "SELECT sum(missing_count) AS n FROM air_raw_record_sequence_mv",
-        "detail_sql": "SELECT * FROM air_raw_record_sequence_mv ORDER BY missing_count DESC",
+        "count_sql": "SELECT sum(missing_count) AS n FROM air_raw_record_sequence_check",
+        "detail_sql": "SELECT * FROM air_raw_record_sequence_check ORDER BY missing_count DESC",
     },
     {
         "key": "file_sequence_check",
