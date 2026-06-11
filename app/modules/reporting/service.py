@@ -39,6 +39,15 @@ REPORTS: list[dict[str, Any]] = [
         "detail_sql": "SELECT * FROM air_raw_record_sequence_check ORDER BY missing_count DESC",
     },
     {
+        "key": "processed_record_sequence",
+        "title": "Processed Record Sequence Check Report",
+        "group": "Files",
+        "available": True,
+        "source": "clickhouse",
+        "count_sql": "SELECT sum(missing_count) AS n FROM air_processed_record_sequence_check",
+        "detail_sql": "SELECT * FROM air_processed_record_sequence_check ORDER BY missing_count DESC",
+    },
+    {
         "key": "file_sequence_check",
         "title": "File Sequence Check Report",
         "group": "Files",
