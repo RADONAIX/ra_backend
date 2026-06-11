@@ -49,6 +49,36 @@ REPORTS: list[dict[str, Any]] = [
         "count_sql": "SELECT sum(missing_count) AS n FROM air_raw_record_sequence_mv",
         "detail_sql": "SELECT * FROM air_raw_record_sequence_mv ORDER BY missing_count DESC",
     },
+    {
+        "key": "file_sequence_check",
+        "title": "File Sequence Check Report",
+        "group": "Files",
+        "available": True,
+        "source": "bi_pg",
+        # Full sequence-check table (all statuses). missing_file_sequence is the
+        # Missing-only view of the same table.
+        "count_sql": "SELECT count(*) AS n FROM {schema}.air_file_seq_check",
+        "detail_sql": "SELECT * FROM {schema}.air_file_seq_check ORDER BY date DESC",
+    },
+    {
+        "key": "file_exception",
+        "title": "File Exception Report",
+        "group": "Files",
+        "available": True,
+        "source": "bi_pg",
+        "count_sql": "SELECT count(*) AS n FROM {schema}.air_file_exception_report",
+        "detail_sql": "SELECT * FROM {schema}.air_file_exception_report ORDER BY file_date DESC",
+    },
+    {
+        "key": "report_batch_log",
+        "title": "Report Batch Log",
+        "group": "Operations",
+        "available": True,
+        "source": "bi_pg",
+        # Lives in rafms.air_schema (not bi_reports) — fully qualified, no {schema}.
+        "count_sql": "SELECT count(*) AS n FROM air_schema.report_batch_log",
+        "detail_sql": "SELECT * FROM air_schema.report_batch_log ORDER BY start_time DESC",
+    },
     # --- Stubs: sources not provided yet (flip available=True + add SQL later) ---
     {"key": "file_processing", "title": "File Processing Report", "group": "Files", "available": False},
     {
