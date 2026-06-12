@@ -30,6 +30,7 @@ class PermKey(StrEnum):
     USER_MANAGEMENT = "userManagement"
     ROLE_MANAGEMENT = "roleManagement"
     SETTINGS = "settings"
+    EXPORTS = "exports"
 
 
 ROLE_LABELS: dict[str, str] = {
@@ -51,6 +52,7 @@ PERMISSION_CATALOG: list[tuple[PermKey, str, str]] = [
     (PermKey.USER_MANAGEMENT, "User Management", "/users"),
     (PermKey.ROLE_MANAGEMENT, "Role Management", "/roles"),
     (PermKey.SETTINGS, "Settings", "/system-config"),
+    (PermKey.EXPORTS, "Bulk Exports", "/settings/exports"),
 ]
 
 PermissionMap = dict[str, dict[str, bool]]
@@ -72,6 +74,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, PermissionMap] = {
         PermKey.USER_MANAGEMENT: {"view": False, "edit": False},
         PermKey.ROLE_MANAGEMENT: {"view": False, "edit": False},
         PermKey.SETTINGS: {"view": True, "edit": False},
+        PermKey.EXPORTS: {"view": True, "edit": True},
     },
     RoleSlug.ANALYST: {
         PermKey.DASHBOARD: {"view": True, "edit": False},
@@ -82,6 +85,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, PermissionMap] = {
         PermKey.USER_MANAGEMENT: {"view": False, "edit": False},
         PermKey.ROLE_MANAGEMENT: {"view": False, "edit": False},
         PermKey.SETTINGS: {"view": False, "edit": False},
+        PermKey.EXPORTS: {"view": True, "edit": True},
     },
     RoleSlug.VIEWER: {
         PermKey.DASHBOARD: {"view": True, "edit": False},
@@ -92,6 +96,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, PermissionMap] = {
         PermKey.USER_MANAGEMENT: {"view": False, "edit": False},
         PermKey.ROLE_MANAGEMENT: {"view": False, "edit": False},
         PermKey.SETTINGS: {"view": False, "edit": False},
+        PermKey.EXPORTS: {"view": True, "edit": False},
     },
 }
 

@@ -1,115 +1,148 @@
 """Celery tasks.
 
-generate_report: materialises a certified reconciliation export as a CSV file
-from ra-platform's ClickHouse recon table, records its size + SHA-256 checksum,
-and marks the Report row Completed. All DB/ClickHouse access here is sync.
+run_export: streams a report (optionally date-filtered) to a gzipped CSV on the
+configured storage, updating progress on the ExportJob row chunk-by-chunk, then
+records size/checksum/KPIs and marks the job Completed. All DB access is sync
+(SyncSession); report data is read via the sync streaming readers.
 """
 
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
-import os
-from datetime import UTC, datetime
+import io
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from typing import Any
 
-import clickhouse_connect
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.modules.reporting.models import Report
+from app.core.storage import Storage, get_storage
+from app.modules.exports.models import ExportJob
+from app.modules.reporting import service as reporting
+from app.workers import streaming
 from app.workers.celery_app import celery
 from app.workers.db import SyncSession
 
 log = get_logger("worker")
 
-_RECON_COLUMNS = [
-    "record_type",
-    "raw_txn_id",
-    "proc_txn_id",
-    "raw_node_id",
-    "raw_subscriber_num",
-    "raw_tran_amt",
-    "proc_tran_amt",
-    "raw_acc_balance",
-    "proc_acc_balance",
-    "reconciliation_status",
-    "created_time",
-]
+
+def _jsonable(v: Any) -> Any:
+    if isinstance(v, datetime | date):
+        return v.isoformat(sep=" ") if isinstance(v, datetime) else v.isoformat()
+    if isinstance(v, Decimal):
+        return float(v)
+    return v
 
 
-def _ch_client():
-    return clickhouse_connect.get_client(
-        host=settings.clickhouse_host,
-        port=settings.clickhouse_port,
-        username=settings.clickhouse_user,
-        password=settings.clickhouse_password,
-        database=settings.clickhouse_database,
-        connect_timeout=5,
-    )
+def _parse_date(v: Any) -> date | None:
+    if not v:
+        return None
+    return date.fromisoformat(v) if isinstance(v, str) else v
 
 
-def _write_csv(path: str, rows: list[tuple], header: list[str]) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(header)
-        writer.writerows(rows)
-
-
-def _sha256(path: str) -> str:
+def _sha256_of(storage: Storage, key: str) -> str:
     digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
+    with storage.open_read(key) as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
-@celery.task(name="reports.generate", bind=True, max_retries=2, default_retry_delay=30)
-def generate_report(self, report_id: str) -> dict:
+def _is_cancelled(session, job_id: str) -> bool:
+    status = session.execute(
+        select(ExportJob.status).where(ExportJob.id == job_id)
+    ).scalar_one_or_none()
+    return status == "Cancelled"
+
+
+@celery.task(name="exports.run", bind=True, max_retries=2, default_retry_delay=30)
+def run_export(self, job_id: str) -> dict:
     session = SyncSession()
+    storage = get_storage()
+    key = ""
     try:
-        report = session.get(Report, report_id)
-        if report is None:
-            return {"ok": False, "reason": "report_not_found"}
+        job = session.get(ExportJob, job_id)
+        if job is None:
+            return {"ok": False, "reason": "job_not_found"}
 
-        report.status = "Running"
+        job.status = "Running"
+        job.started_at = datetime.now(UTC)
+        job.celery_task_id = self.request.id
         session.commit()
 
-        out_path = os.path.join(settings.reports_dir, f"{report.reference}.csv")
-        ident = "`" + settings.clickhouse_database.replace("`", "``") + "`"
+        report_key = job.report_key
+        date_from = _parse_date((job.params or {}).get("date_from"))
+        date_to = _parse_date((job.params or {}).get("date_to"))
+        # date_to is inclusive for the user → exclusive upper bound for the query.
+        date_to_excl = (date_to + timedelta(days=1)) if date_to else None
 
-        try:
-            client = _ch_client()
-            result = client.query(
-                f"SELECT {', '.join(_RECON_COLUMNS)} "
-                f"FROM {ident}.air_reconciliation FINAL "
-                f"ORDER BY created_time DESC LIMIT 1000000"
-            )
-            rows = result.result_rows
-        except Exception as exc:  # noqa: BLE001 — degrade to an empty certified file
-            log.warning("report_clickhouse_unavailable", report_id=report_id, error=str(exc))
-            rows = []
-
-        _write_csv(out_path, rows, _RECON_COLUMNS)
-
-        report.file_path = out_path
-        report.size_bytes = os.path.getsize(out_path)
-        report.checksum_sha256 = _sha256(out_path)
-        report.status = "Completed"
-        report.completed_at = datetime.now(UTC)
-        report.error = None
+        # 1) total rows (for % progress)
+        c_src, c_sql, c_params = reporting.count_query(
+            report_key, date_from=date_from, date_to=date_to_excl
+        )
+        total = int((streaming.query_one(c_src, c_sql, c_params) or {}).get("n") or 0)
+        job.total_rows = total
         session.commit()
-        log.info("report_generated", report_id=report_id, size=report.size_bytes)
-        return {"ok": True, "size": report.size_bytes, "checksum": report.checksum_sha256}
+
+        # 2) stream rows → gzipped CSV
+        key = f"{job.reference}.csv.gz"
+        e_src, e_sql, e_params = reporting.export_query(
+            report_key, date_from=date_from, date_to=date_to_excl
+        )
+        processed = 0
+        with (
+            storage.open_write(key) as raw,
+            gzip.GzipFile(fileobj=raw, mode="wb") as gz,
+            io.TextIOWrapper(gz, encoding="utf-8", newline="") as txt,
+        ):
+            writer = csv.writer(txt)
+            rows = streaming.stream_rows(e_src, e_sql, e_params, settings.export_chunk_rows)
+            writer.writerow(next(rows))  # first item = column header
+            for chunk in rows:
+                writer.writerows(chunk)  # csv stringifies cells (dates/decimals)
+                processed += len(chunk)
+                if _is_cancelled(session, job_id):
+                    log.info("export_cancelled", job_id=job_id, processed=processed)
+                    storage.delete(key)
+                    return {"ok": False, "reason": "cancelled"}
+                job.processed_rows = processed
+                job.progress_pct = int(processed / total * 100) if total else 0
+                session.commit()
+
+        # 3) finalize: size + checksum + KPIs
+        k_src, k_sql, k_params = reporting.kpi_query(
+            report_key, date_from=date_from, date_to=date_to_excl
+        )
+        kpi_row = streaming.query_one(k_src, k_sql, k_params) or {}
+
+        job.file_path = storage.locator(key)
+        job.file_size_bytes = storage.size(key)
+        job.checksum_sha256 = _sha256_of(storage, key)
+        job.kpis = {k: _jsonable(v) for k, v in kpi_row.items()}
+        job.processed_rows = processed
+        job.progress_pct = 100
+        job.status = "Completed"
+        job.completed_at = datetime.now(UTC)
+        job.expires_at = datetime.now(UTC) + timedelta(days=settings.export_retention_days)
+        job.error = None
+        session.commit()
+        log.info("export_completed", job_id=job_id, rows=processed, size=job.file_size_bytes)
+        return {"ok": True, "rows": processed, "size": job.file_size_bytes}
 
     except Exception as exc:  # noqa: BLE001
         session.rollback()
-        report = session.get(Report, report_id)
-        if report is not None:
-            report.status = "Failed"
-            report.error = str(exc)
+        if key:
+            storage.delete(key)
+        job = session.get(ExportJob, job_id)
+        if job is not None and job.status != "Cancelled":
+            job.status = "Failed"
+            job.error = str(exc)[:2000]
             session.commit()
-        log.error("report_failed", report_id=report_id, error=str(exc))
+        log.error("export_failed", job_id=job_id, error=str(exc))
         raise
     finally:
         session.close()

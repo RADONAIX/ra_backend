@@ -103,10 +103,18 @@ make install         # uv venv + deps (incl. dev)
 make migrate         # alembic upgrade head
 make seed            # roles/users/decoders/config/alerts
 make run             # uvicorn with reload  → http://localhost:8000
-make worker          # in another shell, the Celery worker
+make worker          # in another shell, the Celery worker (REQUIRED for bulk exports)
 make test            # pytest
 make lint            # ruff
 ```
+
+**Bulk exports** (`/exports`): `POST /exports` with `{reportKey, dateFrom, dateTo}`
+enqueues a Celery job that streams the (date-filtered) report to a gzipped CSV
+under `REPORTS_DIR`, tracking `progressPct` on the job row (poll `GET /exports/{id}`);
+`GET /exports/{id}/download` serves it when complete. `POST /exports/kpis` returns
+aggregate KPIs for a selection synchronously (no download). **Requires Redis + a
+running worker** (`make worker`). Chunked streaming keeps worker memory flat even
+for millions of rows.
 
 ---
 
@@ -127,6 +135,7 @@ All routes are under `/api`. Protected routes require `Authorization: Bearer <jw
 | assurance | `GET/POST /cases` · `GET/PATCH /cases/{id}` · `POST /cases/{id}/comments` | case management |
 | assurance | `GET/POST /workbench/queries` · `GET /workbench/stats` | investigation workbench |
 | reporting | `GET/POST /reports` · `GET /reports/{ref}/download` | certified exports |
+| exports | `POST /exports` · `GET /exports[/{id}]` · `GET /exports/{id}/download` · `DELETE /exports/{id}` · `POST /exports/kpis` | bulk async report downloads + KPI preview |
 | meta | `GET /health` · `GET /health/ready` · `GET /dashboard/kpis` | ops + headline KPIs |
 
 The dashboard's main analytics are an **embedded Superset iframe** in the UI,

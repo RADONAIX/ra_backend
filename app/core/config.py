@@ -67,13 +67,18 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # --- Redis (cache + Celery broker/result backend) ----------------------
-    # NOT YET ACTIVE: scaffolding for the planned async architecture. Redis is
-    # currently only Celery's broker, the cache is unwired, and no Celery task
-    # is enqueued — the app runs without either today. Wire up when adding
-    # background report generation / pipeline triggers / caching.
+    # ACTIVE: backs the bulk-export jobs (exports module). The Celery worker
+    # consumes export tasks; the cache helper is still optional. Requires Redis
+    # + a running worker (`make worker` / docker-compose `worker` service).
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
+
+    # --- Bulk exports (async report downloads) -----------------------------
+    export_retention_days: int = 7
+    export_max_concurrent_per_user: int = 3
+    export_max_date_span_days: int = 31
+    export_chunk_rows: int = 50_000
 
     # --- ra-platform integration: ClickHouse (read-only recon data) --------
     clickhouse_enabled: bool = True

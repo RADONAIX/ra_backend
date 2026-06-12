@@ -1,0 +1,381 @@
+<!doctype html><html><head><meta charset='utf-8'><style>
+@page { size: A4; margin: 16mm 14mm; }
+body { font-family: -apple-system,'Helvetica Neue',Arial,sans-serif; font-size: 11px; line-height:1.5; color:#1a2230; }
+h1 { font-size:22px; color:#0b3d6b; border-bottom:3px solid #0b3d6b; padding-bottom:6px; }
+h2 { font-size:15px; color:#0b3d6b; margin-top:22px; border-bottom:1px solid #d3dbe6; padding-bottom:3px; page-break-after:avoid; }
+h3 { font-size:12.5px; color:#11406e; margin:14px 0 4px; page-break-after:avoid; font-family:'SF Mono',Menlo,monospace; }
+h3 code { background:none; padding:0; }
+code { font-family:'SF Mono',Menlo,monospace; background:#eef2f7; padding:1px 4px; border-radius:3px; font-size:10px; }
+pre { background:#f4f6f9; border:1px solid #dde3ec; border-radius:5px; padding:8px; page-break-inside:avoid; }
+pre code { background:none; }
+table { border-collapse:collapse; width:100%; margin:8px 0; page-break-inside:avoid; font-size:10px; }
+th,td { border:1px solid #cfd8e3; padding:5px 7px; text-align:left; vertical-align:top; }
+th { background:#0b3d6b; color:#fff; }
+tr:nth-child(even) td { background:#f6f8fb; }
+ul { margin:4px 0 8px; padding-left:18px; } li { margin:2px 0; }
+hr { border:none; border-top:1px solid #d3dbe6; margin:18px 0; }
+strong { color:#0b3d6b; }
+blockquote { border-left:3px solid #e0a800; background:#fff8e6; margin:8px 0; padding:6px 10px; color:#6b5400; }
+</style></head><body><h1>RADONAIX Revenue Assurance — API Reference</h1>
+<p>Plain-English reference for every backend API: what it does, what it expects, and what it returns.</p>
+<h2>Conventions (read first)</h2>
+<ul>
+<li><strong>Base URL:</strong> all paths are under <code>/api</code> — e.g. <code>http://localhost:8000/api/users</code>.</li>
+<li><strong>Auth:</strong> every endpoint except the health checks and <code>POST /auth/login</code> / <code>POST /auth/refresh</code> requires a <strong>JWT bearer token</strong> in the header: <code>Authorization: Bearer &lt;token&gt;</code>. You get the token from <code>POST /auth/login</code>. Access tokens last ~12 hours; refresh tokens ~14 days.</li>
+<li><strong>Permissions (RBAC):</strong> each protected endpoint needs a permission — a <em>feature</em> (e.g. <code>userManagement</code>, <code>pipelines</code>) plus an <em>action</em> (<code>view</code> to read, <code>edit</code> to change). The four roles (<code>admin</code>, <code>ra_lead</code>, <code>analyst</code>, <code>viewer</code>) each carry a matrix of these. If your role lacks the permission you get <strong>403</strong>.</li>
+<li><strong>Pagination:</strong> list endpoints accept <code>?limit=</code> (1–500, default 50) and <code>?offset=</code> (default 0).</li>
+<li><strong>Errors:</strong> returned as JSON <code>{ "error": { "code": "...", "message": "...", "details": {...} } }</code>. Common: <code>401</code> missing/invalid token, <code>403</code> permission denied, <code>404</code> not found, <code>422</code> invalid request body.</li>
+<li><strong>Timestamps</strong> are ISO-8601 strings.</li>
+</ul>
+<hr />
+<h2>1. Health &amp; Dashboard (<code>meta</code>)</h2>
+<h3><code>GET /api/health</code></h3>
+<ul>
+<li><strong>What:</strong> Liveness check — is the API process up.</li>
+<li><strong>Input:</strong> none (no auth).</li>
+<li><strong>Output:</strong> <code>{ status: "ok", version, environment }</code>.</li>
+</ul>
+<h3><code>GET /api/health/ready</code></h3>
+<ul>
+<li><strong>What:</strong> Readiness check — can the app serve traffic. Pings the app database and the three integrations (ClickHouse, ra-platform Postgres, Airflow). Ready only requires the app DB; integrations are optional.</li>
+<li><strong>Input:</strong> none (no auth).</li>
+<li><strong>Output:</strong> <code>{ ready: bool, checks: { app_db, clickhouse, ra_postgres, airflow } }</code> (each a true/false).</li>
+</ul>
+<h3><code>GET /api/dashboard/kpis</code></h3>
+<ul>
+<li><strong>What:</strong> Headline numbers for the dashboard, derived from the last 24h of reconciliation data (ClickHouse).</li>
+<li><strong>Input:</strong> none. <strong>Permission:</strong> <code>dashboard / view</code>.</li>
+<li><strong>Output:</strong> <code>{ assuredRevenue, matchRate, openLeakageRisk, criticalAlerts }</code>.</li>
+</ul>
+<hr />
+<h2>2. Authentication (<code>/auth</code>)</h2>
+<h3><code>POST /api/auth/login</code></h3>
+<ul>
+<li><strong>What:</strong> Sign in. Validates email + password, returns an access token, a refresh token, and the user profile. Enforces account lockout after too many failures.</li>
+<li><strong>Input (body):</strong> <code>{ email, password }</code>.</li>
+<li><strong>Output:</strong> <code>{ token, refreshToken, user: { id, name, email, role, roleLabel, department, avatar, status, lastLogin, mustResetPassword } }</code>.</li>
+</ul>
+<h3><code>POST /api/auth/refresh</code></h3>
+<ul>
+<li><strong>What:</strong> Exchange a valid refresh token for a fresh access + refresh pair (rotates the refresh token; a reused/old token triggers revocation of the session).</li>
+<li><strong>Input (body):</strong> <code>{ refreshToken }</code>.</li>
+<li><strong>Output:</strong> <code>{ token, refreshToken }</code>.</li>
+</ul>
+<h3><code>POST /api/auth/logout</code></h3>
+<ul>
+<li><strong>What:</strong> Revoke the current session so its access token stops working immediately.</li>
+<li><strong>Input:</strong> none (bearer token identifies the session).</li>
+<li><strong>Output:</strong> <code>{ ok: true, detail }</code>.</li>
+</ul>
+<h3><code>POST /api/auth/change-password</code></h3>
+<ul>
+<li><strong>What:</strong> Change your own password.</li>
+<li><strong>Input (body):</strong> <code>{ currentPassword, newPassword }</code> (new password min 8 chars).</li>
+<li><strong>Output:</strong> <code>{ ok: true, detail }</code>.</li>
+</ul>
+<h3><code>GET /api/auth/me</code></h3>
+<ul>
+<li><strong>What:</strong> Return the signed-in user's own profile.</li>
+<li><strong>Input:</strong> none (bearer token).</li>
+<li><strong>Output:</strong> <code>AuthUser</code> — <code>{ id, name, email, role, roleLabel, department, avatar, status, lastLogin, mustResetPassword }</code>.</li>
+</ul>
+<h3><code>GET /api/permissions</code></h3>
+<ul>
+<li><strong>What:</strong> The catalog of permission keys (used by the role editor to know which toggles exist).</li>
+<li><strong>Input:</strong> none. <strong>Permission:</strong> <code>roleManagement / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ key, label, path }</code>.</li>
+</ul>
+<hr />
+<h2>3. User Management (<code>/users</code>)</h2>
+<h3><code>GET /api/users</code></h3>
+<ul>
+<li><strong>What:</strong> List all users (paginated).</li>
+<li><strong>Input:</strong> <code>?limit</code>, <code>?offset</code>. <strong>Permission:</strong> <code>userManagement / view</code>.</li>
+<li><strong>Output:</strong> list of <code>UserRow</code> — <code>{ id, fullName, email, phone, department, role, status, lastLogin, createdAt }</code>.</li>
+</ul>
+<h3><code>POST /api/users</code></h3>
+<ul>
+<li><strong>What:</strong> Create a new user.</li>
+<li><strong>Input (body):</strong> <code>{ fullName, email, password (min 8), role, phone?, department?, status?, mustResetPassword? }</code>. <strong>Permission:</strong> <code>userManagement / edit</code>.</li>
+<li><strong>Output:</strong> the created <code>UserRow</code>.</li>
+</ul>
+<h3><code>GET /api/users/{user_id}</code></h3>
+<ul>
+<li><strong>What:</strong> Fetch one user by id. <strong>Permission:</strong> <code>userManagement / view</code>.</li>
+<li><strong>Output:</strong> <code>UserRow</code>.</li>
+</ul>
+<h3><code>PATCH /api/users/{user_id}</code></h3>
+<ul>
+<li><strong>What:</strong> Update any subset of a user's fields (name, email, password, role, phone, department, status).</li>
+<li><strong>Input (body):</strong> any of <code>UserUpdate</code> fields. <strong>Permission:</strong> <code>userManagement / edit</code>.</li>
+<li><strong>Output:</strong> updated <code>UserRow</code>.</li>
+</ul>
+<h3><code>DELETE /api/users/{user_id}</code></h3>
+<ul>
+<li><strong>What:</strong> Soft-delete a user (marks them deleted; you cannot delete your own account).</li>
+<li><strong>Input:</strong> path id. <strong>Permission:</strong> <code>userManagement / edit</code>.</li>
+<li><strong>Output:</strong> <code>{ ok: true, detail }</code>.</li>
+</ul>
+<hr />
+<h2>4. Roles &amp; Permissions (<code>/roles</code>)</h2>
+<h3><code>GET /api/roles</code></h3>
+<ul>
+<li><strong>What:</strong> List all roles with their full permission matrices. <strong>Permission:</strong> <code>roleManagement / view</code>.</li>
+<li><strong>Output:</strong> list of <code>RoleRow</code> — <code>{ id, name, description, status, permissions, createdAt, updatedAt }</code>.</li>
+</ul>
+<h3><code>POST /api/roles</code></h3>
+<ul>
+<li><strong>What:</strong> Create a role, or upsert one (pass an <code>id</code> to update, omit to create).</li>
+<li><strong>Input (body):</strong> <code>{ id?, name, description?, status?, permissions? }</code>. <strong>Permission:</strong> <code>roleManagement / edit</code>.</li>
+<li><strong>Output:</strong> <code>RoleRow</code>.</li>
+</ul>
+<h3><code>PATCH /api/roles/{role_id}</code></h3>
+<ul>
+<li><strong>What:</strong> Update a role's metadata only (name / description / status). Permissions go through the next endpoint.</li>
+<li><strong>Input (body):</strong> any of <code>{ name, description, status }</code>. <strong>Permission:</strong> <code>roleManagement / edit</code>.</li>
+<li><strong>Output:</strong> <code>RoleRow</code>.</li>
+</ul>
+<h3><code>PUT /api/roles/{role_id}/permissions</code></h3>
+<ul>
+<li><strong>What:</strong> Replace a role's entire permission matrix.</li>
+<li><strong>Input (body):</strong> <code>{ permissions: { &lt;feature&gt;: { view, edit }, ... } }</code>. <strong>Permission:</strong> <code>roleManagement / edit</code>.</li>
+<li><strong>Output:</strong> <code>RoleRow</code>.</li>
+</ul>
+<hr />
+<h2>5. Audit Log (<code>/audit-logs</code>)</h2>
+<h3><code>GET /api/audit-logs</code></h3>
+<ul>
+<li><strong>What:</strong> List audit-trail entries (logins, user/role changes, etc.), newest first, paginated.</li>
+<li><strong>Input:</strong> <code>?limit</code>, <code>?offset</code>. <strong>Permission:</strong> <code>settings / view</code>.</li>
+<li><strong>Output:</strong> list of <code>AuditRow</code> — <code>{ id, actor, action, target, at }</code>.</li>
+</ul>
+<hr />
+<h2>6. Pipelines &amp; Job Monitor (<code>/pipelines</code>)</h2>
+<h3><code>GET /api/pipelines/stages</code></h3>
+<ul>
+<li><strong>What:</strong> Status of each processing stage (Collection → Decoding → Validation → Reconciliation → Reporting), derived from ClickHouse; falls back to representative data if upstream is unavailable.</li>
+<li><strong>Permission:</strong> <code>pipelines / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ key, name, status, duration, metric }</code>.</li>
+</ul>
+<h3><code>GET /api/pipelines/kpis</code></h3>
+<ul>
+<li><strong>What:</strong> Pipeline headline KPIs. <strong>Permission:</strong> <code>pipelines / view</code>.</li>
+<li><strong>Output:</strong> <code>{ throughput, avgLatency, failed24h, slaBreaches }</code>.</li>
+</ul>
+<h3><code>GET /api/pipelines/runs</code></h3>
+<ul>
+<li><strong>What:</strong> Recent reconciliation runs.</li>
+<li><strong>Input:</strong> <code>?limit</code> (1–200, default 25). <strong>Permission:</strong> <code>pipelines / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ id, source, batch, start, end, status, records, failed }</code>.</li>
+</ul>
+<h3><code>GET /api/pipelines/alerts</code></h3>
+<ul>
+<li><strong>What:</strong> Operational alerts (from the app's <code>pipeline_alerts</code> table). <strong>Permission:</strong> <code>pipelines / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ id, severity, stage, message, createdAt, status }</code>.</li>
+</ul>
+<h3><code>GET /api/pipelines/retries</code></h3>
+<ul>
+<li><strong>What:</strong> Jobs that are candidates for retry (surfaced from open alerts). <strong>Permission:</strong> <code>pipelines / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ id, batch, stage, error, retryCount }</code>.</li>
+</ul>
+<h3><code>GET /api/pipelines/batches</code>  ⭐ (Pipeline Map)</h3>
+<ul>
+<li><strong>What:</strong> Live per-batch pipeline logs from the ra-platform DB, <strong>grouped by DAG and stream</strong>, for the last <em>N</em> hours. Currently AIR Raw + AIR Processed; SDP/MSC added later.</li>
+<li><strong>Input:</strong> <code>?hours</code> (1–168, default 12). <strong>Permission:</strong> <code>pipelines / view</code>.</li>
+<li><strong>Output:</strong> list of groups <code>{ dag, stream, rows: BatchLog[] }</code>, where each <code>BatchLog</code> has the batch id, per-stage start/end/status (watcher, decoder, ingestion, normalization…), file counts, row counts, and error/quarantine fields. Missing columns come back as <code>0</code>/<code>""</code>.</li>
+</ul>
+<h3><code>GET /api/pipelines/batches/{batch_id}/files</code>  ⭐ (Export → View files)</h3>
+<ul>
+<li><strong>What:</strong> Every file belonging to one batch. The source table is chosen automatically from the batch-id prefix (<code>AIR_PROCESSED_…</code> → processed file log, <code>AIR_RAW_…</code> → raw file log).</li>
+<li><strong>Input:</strong> <code>batch_id</code> in the path. <strong>Permission:</strong> <code>pipelines / view</code>.</li>
+<li><strong>Output:</strong> flat list of <code>FileLog</code> — <code>{ id, filename, batch_id, node_id, sequence_number, file_timestamp, file_type, file_status, integrity_flag, archived_*, watcher/picker/decoder/csv_creation/db_loading/ingestion stages, expected_record_count, actual_record_count, retry_count, last_error_step, error_message, quarantine_* }</code>. Returns <code>[]</code> for an unknown prefix or an empty table.</li>
+</ul>
+<h3><code>POST /api/pipelines/jobs/{job_id}/retry</code></h3>
+<ul>
+<li><strong>What:</strong> Trigger a retry of a job (via Airflow; queues gracefully if Airflow is disabled).</li>
+<li><strong>Input:</strong> <code>job_id</code> in path. <strong>Permission:</strong> <code>pipelines / edit</code>.</li>
+<li><strong>Output:</strong> <code>{ ok, detail }</code>.</li>
+</ul>
+<h3><code>POST /api/pipelines/jobs/{job_id}/replay</code></h3>
+<ul>
+<li><strong>What:</strong> Trigger a full replay of a job. <strong>Permission:</strong> <code>pipelines / edit</code>.</li>
+<li><strong>Output:</strong> <code>{ ok, detail }</code>.</li>
+</ul>
+<h3><code>POST /api/pipelines/alerts/{alert_id}/ack</code></h3>
+<ul>
+<li><strong>What:</strong> Acknowledge an operational alert (marks it Acknowledged by the caller). <strong>Permission:</strong> <code>pipelines / edit</code>.</li>
+<li><strong>Output:</strong> <code>{ ok, detail }</code>.</li>
+</ul>
+<hr />
+<h2>7. Decoders (<code>/decoders</code>)</h2>
+<h3><code>GET /api/decoders</code></h3>
+<ul>
+<li><strong>What:</strong> List configured decoders. <strong>Permission:</strong> <code>settings / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ id, name, version, status, throughput }</code>.</li>
+</ul>
+<h3><code>POST /api/decoders</code></h3>
+<ul>
+<li><strong>What:</strong> Create or update a decoder (upsert by <code>id</code>).</li>
+<li><strong>Input (body):</strong> <code>{ id, name, version, status?, throughput?, config? }</code>. <strong>Permission:</strong> <code>settings / edit</code>.</li>
+<li><strong>Output:</strong> the saved decoder row.</li>
+</ul>
+<hr />
+<h2>8. System Configuration (<code>/system/config</code>)</h2>
+<h3><code>GET /api/system/config</code></h3>
+<ul>
+<li><strong>What:</strong> The singleton system config. <strong>Permission:</strong> <code>settings / view</code>.</li>
+<li><strong>Output:</strong> <code>{ environment, retentionDays, slaMinutes, alertEmail, maintenanceMode }</code>.</li>
+</ul>
+<h3><code>PUT /api/system/config</code></h3>
+<ul>
+<li><strong>What:</strong> Update any subset of the config.</li>
+<li><strong>Input (body):</strong> any of <code>{ environment, retentionDays, slaMinutes, alertEmail, maintenanceMode }</code>. <strong>Permission:</strong> <code>settings / edit</code>.</li>
+<li><strong>Output:</strong> updated config.</li>
+</ul>
+<hr />
+<h2>9. Reports (<code>/reports</code>)</h2>
+<h3><code>GET /api/reports</code></h3>
+<ul>
+<li><strong>What:</strong> List generated/queued reports (paginated). <strong>Permission:</strong> <code>reports / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ id, name, period, status, size }</code>.</li>
+</ul>
+<h3><code>POST /api/reports</code></h3>
+<ul>
+<li><strong>What:</strong> Request a new report. Returns immediately (HTTP 202) while it generates in the background.</li>
+<li><strong>Input (body):</strong> <code>{ name, reportType?, period?, params? }</code>. <strong>Permission:</strong> <code>reports / edit</code>.</li>
+<li><strong>Output:</strong> the created <code>ReportRow</code> (status starts as queued/processing).</li>
+</ul>
+<h3><code>GET /api/reports/{reference}/download</code></h3>
+<ul>
+<li><strong>What:</strong> Download a completed report as a CSV file. Includes an <code>X-Checksum-SHA256</code> header.</li>
+<li><strong>Input:</strong> <code>reference</code> in path. <strong>Permission:</strong> <code>reports / view</code>.</li>
+<li><strong>Output:</strong> the CSV file, or <strong>404</strong> if the report isn't finished yet.</li>
+</ul>
+<hr />
+<h2>10. Reconciliation (<code>/recon</code>)  — kept live</h2>
+<h3><code>GET /api/recon/summary</code></h3>
+<ul>
+<li><strong>What:</strong> Reconciliation summary over the last <em>N</em> hours (totals, match rate, estimated leakage), read from ClickHouse.</li>
+<li><strong>Input:</strong> <code>?hours</code> (1–720, default 24). <strong>Permission:</strong> <code>dashboard / view</code>.</li>
+<li><strong>Output:</strong> <code>{ total, matched, amountMismatch, rawOnly, procOnly, matchRate, estimatedLeakage }</code>.</li>
+</ul>
+<h3><code>GET /api/recon/records</code></h3>
+<ul>
+<li><strong>What:</strong> Individual reconciliation records, optionally filtered by status, paginated.</li>
+<li><strong>Input:</strong> <code>?status</code>, <code>?limit</code>, <code>?offset</code>. <strong>Permission:</strong> <code>workbench / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ recordType, txnId, nodeId, subscriberNum, rawAmount, procAmount, rawBalance, procBalance, status, createdTime }</code>.</li>
+</ul>
+<hr />
+<h2>11. Case Management (<code>/cases</code>)  — ⛔ hidden in the first patch</h2>
+<blockquote>
+<p>These endpoints exist in code but are <strong>not mounted</strong> in the first application patch (the Case Management UI is hidden). Listed for completeness.</p>
+</blockquote>
+<h3><code>GET /api/cases</code></h3>
+<ul>
+<li><strong>What:</strong> List cases (paginated, filter by status). <strong>Permission:</strong> <code>caseManagement / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ id, reference, title, severity, status, owner, updated, estimatedImpact }</code>.</li>
+</ul>
+<h3><code>POST /api/cases</code></h3>
+<ul>
+<li><strong>What:</strong> Open a new case.</li>
+<li><strong>Input (body):</strong> <code>{ title, description?, severity?, status?, owner?, linkedTxnId?, estimatedImpact? }</code>. <strong>Permission:</strong> <code>caseManagement / edit</code>.</li>
+<li><strong>Output:</strong> <code>CaseRow</code>.</li>
+</ul>
+<h3><code>GET /api/cases/{case_id}</code></h3>
+<ul>
+<li><strong>What:</strong> Full case detail including comments. <strong>Permission:</strong> <code>caseManagement / view</code>.</li>
+<li><strong>Output:</strong> <code>CaseRow</code> + <code>{ description, linkedTxnId, comments[] }</code>.</li>
+</ul>
+<h3><code>PATCH /api/cases/{case_id}</code></h3>
+<ul>
+<li><strong>What:</strong> Update a case (title, description, severity, status, owner, impact). <strong>Permission:</strong> <code>caseManagement / edit</code>.</li>
+<li><strong>Output:</strong> <code>CaseRow</code>.</li>
+</ul>
+<h3><code>POST /api/cases/{case_id}/comments</code></h3>
+<ul>
+<li><strong>What:</strong> Add a comment to a case.</li>
+<li><strong>Input (body):</strong> <code>{ body }</code>. <strong>Permission:</strong> <code>caseManagement / edit</code>.</li>
+<li><strong>Output:</strong> the created comment <code>{ id, author, body, createdAt }</code>.</li>
+</ul>
+<hr />
+<h2>12. Assurance Workbench (<code>/workbench</code>)  — ⛔ hidden in the first patch</h2>
+<blockquote>
+<p>Not mounted in the first application patch (Workbench UI hidden). Listed for completeness.</p>
+</blockquote>
+<h3><code>GET /api/workbench/queries</code></h3>
+<ul>
+<li><strong>What:</strong> List saved investigation queries. <strong>Permission:</strong> <code>workbench / view</code>.</li>
+<li><strong>Output:</strong> list of <code>{ id, reference, name, owner, count }</code>.</li>
+</ul>
+<h3><code>POST /api/workbench/queries</code></h3>
+<ul>
+<li><strong>What:</strong> Save a new query.</li>
+<li><strong>Input (body):</strong> <code>{ name, definition? }</code>. <strong>Permission:</strong> <code>workbench / edit</code>.</li>
+<li><strong>Output:</strong> <code>SavedQueryRow</code>.</li>
+</ul>
+<h3><code>GET /api/workbench/stats</code></h3>
+<ul>
+<li><strong>What:</strong> Workbench summary stats. <strong>Permission:</strong> <code>workbench / view</code>.</li>
+<li><strong>Output:</strong> <code>{ openInvestigations, closedThisWeek, avgResolutionDays }</code>.</li>
+</ul>
+<hr />
+<h2>Quick index</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Endpoints</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Health/Dashboard</td>
+<td><code>GET /health</code>, <code>GET /health/ready</code>, <code>GET /dashboard/kpis</code></td>
+</tr>
+<tr>
+<td>Auth</td>
+<td><code>POST /auth/login</code>, <code>/auth/refresh</code>, <code>/auth/logout</code>, <code>/auth/change-password</code>, <code>GET /auth/me</code>, <code>GET /permissions</code></td>
+</tr>
+<tr>
+<td>Users</td>
+<td><code>GET/POST /users</code>, <code>GET/PATCH/DELETE /users/{id}</code></td>
+</tr>
+<tr>
+<td>Roles</td>
+<td><code>GET/POST /roles</code>, <code>PATCH /roles/{id}</code>, <code>PUT /roles/{id}/permissions</code></td>
+</tr>
+<tr>
+<td>Audit</td>
+<td><code>GET /audit-logs</code></td>
+</tr>
+<tr>
+<td>Pipelines</td>
+<td><code>GET /pipelines/{stages,kpis,runs,alerts,retries,batches}</code>, <code>GET /pipelines/batches/{id}/files</code>, <code>POST /pipelines/jobs/{id}/{retry,replay}</code>, <code>POST /pipelines/alerts/{id}/ack</code></td>
+</tr>
+<tr>
+<td>Decoders</td>
+<td><code>GET/POST /decoders</code></td>
+</tr>
+<tr>
+<td>System</td>
+<td><code>GET/PUT /system/config</code></td>
+</tr>
+<tr>
+<td>Reports</td>
+<td><code>GET/POST /reports</code>, <code>GET /reports/{ref}/download</code></td>
+</tr>
+<tr>
+<td>Reconciliation</td>
+<td><code>GET /recon/{summary,records}</code></td>
+</tr>
+<tr>
+<td>Cases ⛔</td>
+<td><code>GET/POST /cases</code>, <code>GET/PATCH /cases/{id}</code>, <code>POST /cases/{id}/comments</code></td>
+</tr>
+<tr>
+<td>Workbench ⛔</td>
+<td><code>GET/POST /workbench/queries</code>, <code>GET /workbench/stats</code></td>
+</tr>
+</tbody>
+</table>
+<p>⭐ = built this engagement (Pipeline Map + Export). ⛔ = hidden in the first application patch.</p></body></html>

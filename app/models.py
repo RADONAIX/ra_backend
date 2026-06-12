@@ -6,6 +6,7 @@ so Alembic autogenerate and ``create_all`` see the full schema.
 
 from app.core.database import Base
 from app.modules.assurance.models import Case, CaseComment, SavedQuery
+from app.modules.exports.models import ExportJob
 from app.modules.identity.models import AuditLog, Role, User, UserSession
 from app.modules.operations.models import Decoder, PipelineAlert, SystemConfig
 from app.modules.reporting.models import Report
@@ -26,4 +27,5 @@ __all__ = [
     "Report",
     "Rule",
     "RuleRun",
+    "ExportJob",
 ]

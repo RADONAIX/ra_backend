@@ -28,6 +28,9 @@ EXPORT_LIMIT = 1_000_000
 # Report registry. `{schema}` is filled from settings.ra_bi_pg_schema (BI PG).
 # detail_sql is the base SELECT (with ORDER BY, NO limit); the limit is applied
 # per use (100 for drill-down, EXPORT_LIMIT for CSV).
+# `date_column` (a column in detail_sql's output) enables bulk-export date-range
+# filtering + KPIs (exports module). `kpi_agg` is the aggregate projection used
+# for the KPI preview, evaluated over the (date-filtered) export rows.
 REPORTS: list[dict[str, Any]] = [
     {
         "key": "missing_record_sequence",
@@ -37,6 +40,8 @@ REPORTS: list[dict[str, Any]] = [
         "source": "clickhouse",
         "count_sql": "SELECT sum(missing_count) AS n FROM air_raw_record_sequence_check",
         "detail_sql": "SELECT * FROM air_raw_record_sequence_check ORDER BY missing_count DESC",
+        "date_column": "date",
+        "kpi_agg": "count(*) AS rows, sum(missing_count) AS missing_records",
     },
     {
         "key": "processed_record_sequence",
@@ -48,6 +53,8 @@ REPORTS: list[dict[str, Any]] = [
         "detail_sql": (
             "SELECT * FROM air_processed_record_sequence_check ORDER BY missing_count DESC"
         ),
+        "date_column": "date",
+        "kpi_agg": "count(*) AS rows, sum(missing_count) AS missing_records",
     },
     {
         "key": "file_sequence_check",
@@ -59,6 +66,8 @@ REPORTS: list[dict[str, Any]] = [
         # Missing-only view of the same table.
         "count_sql": "SELECT count(*) AS n FROM {schema}.air_file_seq_check",
         "detail_sql": "SELECT * FROM {schema}.air_file_seq_check ORDER BY date DESC",
+        "date_column": "date",
+        "kpi_agg": "count(*) AS rows, count(*) FILTER (WHERE status <> 'Present') AS missing_files",
     },
     {
         "key": "file_exception",
@@ -68,6 +77,8 @@ REPORTS: list[dict[str, Any]] = [
         "source": "bi_pg",
         "count_sql": "SELECT count(*) AS n FROM {schema}.air_file_exception_report",
         "detail_sql": "SELECT * FROM {schema}.air_file_exception_report ORDER BY file_date DESC",
+        "date_column": "file_date",
+        "kpi_agg": "count(*) AS rows",
     },
     {
         "key": "report_batch_log",
@@ -78,6 +89,8 @@ REPORTS: list[dict[str, Any]] = [
         # Lives in rafms.air_schema (not bi_reports) — fully qualified, no {schema}.
         "count_sql": "SELECT count(*) AS n FROM air_schema.report_batch_log",
         "detail_sql": "SELECT * FROM air_schema.report_batch_log ORDER BY start_time DESC",
+        "date_column": "start_time",
+        "kpi_agg": "count(*) AS rows",
     },
     {
         "key": "air_reconciliation",
@@ -101,6 +114,13 @@ REPORTS: list[dict[str, Any]] = [
             "FROM air_reconciliation WHERE reconciliation_status != 'MATCHED' "
             "ORDER BY created_time DESC"
         ),
+        "date_column": "created_time",
+        "kpi_agg": (
+            "count(*) AS rows, "
+            "countIf(reconciliation_status = 'AMOUNT_MISMATCH') AS amount_mismatch, "
+            "countIf(reconciliation_status = 'RAW_ONLY') AS raw_only, "
+            "countIf(reconciliation_status = 'PROC_ONLY') AS proc_only"
+        ),
     },
 ]
 
@@ -115,12 +135,77 @@ def _jsonable(v: Any) -> Any:
     return v
 
 
-async def _run(source: str, sql: str) -> list[dict[str, Any]]:
+async def _run(
+    source: str, sql: str, params: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     if source == "bi_pg":
-        return await bi_postgres.query(sql)
+        return await bi_postgres.query(sql, params)
     if source == "clickhouse":
-        return await clickhouse.query(sql)
+        return await clickhouse.query(sql, params)
     raise UpstreamUnavailableError(f"Unknown report source: {source}")
+
+
+# --- Bulk-export query builders (shared by the async API + the sync worker) --
+# Pure string builders (no I/O), so both the async endpoints and the sync Celery
+# worker can execute the returned (source, sql, params). date_to is EXCLUSIVE.
+def get_report(key: str) -> dict[str, Any] | None:
+    return _BY_KEY.get(key)
+
+
+def _date_predicate(source: str, date_column: str) -> str:
+    col = f"_e.{date_column}"
+    if source == "clickhouse":
+        return f"toDate({col}) >= {{date_from:Date}} AND toDate({col}) < {{date_to:Date}}"
+    return f"{col}::date >= :date_from AND {col}::date < :date_to"
+
+
+def export_query(
+    key: str, *, date_from: Any = None, date_to: Any = None
+) -> tuple[str, str, dict[str, Any]]:
+    """(source, SELECT-without-LIMIT, params) for the full export, optionally
+    filtered to [date_from, date_to)."""
+    report = _BY_KEY[key]
+    source = report["source"]
+    sql = report["detail_sql"].format(schema=settings.ra_bi_pg_schema)
+    params: dict[str, Any] = {}
+    if date_from is not None and date_to is not None and report.get("date_column"):
+        pred = _date_predicate(source, report["date_column"])
+        sql = f"SELECT * FROM ({sql}) AS _e WHERE {pred}"
+        params = {"date_from": date_from, "date_to": date_to}
+    return source, sql, params
+
+
+def count_query(
+    key: str, *, date_from: Any = None, date_to: Any = None
+) -> tuple[str, str, dict[str, Any]]:
+    source, sub, params = export_query(key, date_from=date_from, date_to=date_to)
+    return source, f"SELECT count(*) AS n FROM ({sub}) AS _c", params
+
+
+def kpi_query(
+    key: str, *, date_from: Any = None, date_to: Any = None
+) -> tuple[str, str, dict[str, Any]]:
+    report = _BY_KEY[key]
+    source, sub, params = export_query(key, date_from=date_from, date_to=date_to)
+    agg = report.get("kpi_agg") or "count(*) AS rows"
+    return source, f"SELECT {agg} FROM ({sub}) AS _k", params
+
+
+async def report_kpis(
+    key: str, *, date_from: Any = None, date_to: Any = None
+) -> dict[str, Any] | None:
+    """Aggregate KPI preview over the selected data (no row dump). None if the
+    report is unknown/unavailable or the source is unreachable."""
+    report = _BY_KEY.get(key)
+    if report is None or not report.get("available"):
+        return None
+    try:
+        source, sql, params = kpi_query(key, date_from=date_from, date_to=date_to)
+        rows = await _run(source, sql, params)
+    except UpstreamUnavailableError:
+        log.info("report_kpis_unavailable", key=key)
+        return None
+    return {k: _jsonable(v) for k, v in rows[0].items()} if rows else {}
 
 
 async def _count(report: dict[str, Any]) -> int:

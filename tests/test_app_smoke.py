@@ -6,7 +6,6 @@ import httpx
 import pytest
 
 from app.main import app
-from app.modules.reporting.service import format_bytes
 
 
 @pytest.mark.asyncio
@@ -38,10 +37,3 @@ async def test_protected_route_requires_auth():
         resp = await client.get("/api/pipelines/kpis")
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "unauthorized"
-
-
-def test_format_bytes():
-    assert format_bytes(None) == "—"
-    assert format_bytes(0) == "—"
-    assert format_bytes(512) == "512 B"
-    assert format_bytes(12_400_000).endswith("MB")
