@@ -37,3 +37,6 @@ reports_out/
 .idea/
 .vscode/
 *.swp
+60s
+docs/API_REFERENCE.html
+docs/API_REFERENCE.pdf
