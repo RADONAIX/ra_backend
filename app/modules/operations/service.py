@@ -82,7 +82,7 @@ _COMMON_FILE_TAIL = (
     "ingestion_start_time, ingestion_end_time, ingestion_status, "
     "expected_record_count, actual_record_count, "
     "attempt_count AS retry_count, last_error_step, "
-    "last_error_message AS error_message, insert_timestamp AS created_at, "
+    "file_reject_reason AS error_message, insert_timestamp AS created_at, "
     "quarantined_at, quarantine_reason, quarantine_batch_dir, quarantine_count, retried_at"
 )
 _PROCESSED_FILE_PROJECTION = (
