@@ -4,12 +4,14 @@ Two supported tracks; pick one based on whether the client allows Docker:
 - **Track A — Docker Compose** (recommended; self-contained)
 - **Track B — bare VM + systemd** (no Docker)
 
-Default deployment is **API-only** (`EXPORTS_ENABLED=false`):
+Default deployment is **API-only** (`EXPORTS_ENABLED=false`), **single HTTPS origin**
+(nginx serves the built UI *and* proxies `/api` — no separate `:8080`/`:8000`, no CORS):
 
 ```
-            ┌─────────── nginx (TLS :443) ───────────┐
-client ───▶ │  https://ra.example.com  →  api :8000   │
-            └────────────────────────────────────────┘
+            ┌──────────────── nginx (TLS :443) ─────────────────┐
+client ───▶ │  https://10.200.36.156/       → built UI (static) │
+            │  https://10.200.36.156/api/   → gunicorn :8000     │
+            └───────────────────────────────────────────────────┘
                  api (gunicorn)
                         │
                  app DB (Postgres, administration schema)
@@ -155,9 +157,45 @@ a one-time "not secure" warning for self-signed certs — accept it, or distribu
 
 **Have a public domain instead?** `sudo apt install -y certbot python3-certbot-nginx && sudo certbot --nginx -d <domain>` (free, trusted, auto-renews).
 
-> **UI note**: with the backend now behind TLS, point the UI's `VITE_API_BASE_URL` at
-> `https://10.200.36.156/api` (through nginx, not `:8000`), and keep `CORS_ORIGINS` set to
-> the UI's own origin (e.g. `http://10.200.36.156:3000`).
+> The UI is served by the **same** nginx (next section) → single origin, so the UI calls
+> the API with **relative** paths and CORS is a non-issue.
+
+---
+
+## 3b. Serve the UI (single HTTPS origin)
+
+nginx (`deploy/nginx/radonaix.conf`) serves the **built UI** at `/` and proxies `/api/` to
+the backend — so the browser only ever talks to `https://10.200.36.156`.
+
+**1) Build the UI** (in the `radon-ai-vision` repo). Because it's same-origin, point the
+build at **relative** API bases — no host, no port:
+```bash
+# radon-ai-vision/.env  (build-time; Vite bakes these in)
+VITE_API_BASE_URL=/api
+VITE_AUTH_API_BASE=
+VITE_PIPELINES_API_BASE=
+```
+```bash
+npm ci && npm run build      # produces dist/
+```
+
+**2) Deploy the build** where nginx's `root` points (`/var/www/radonaix`):
+```bash
+# Bare VM:
+sudo mkdir -p /var/www/radonaix
+sudo rsync -a --delete dist/ /var/www/radonaix/
+sudo nginx -t && sudo systemctl reload nginx
+
+# Docker: mount the build into the nginx service, e.g. add under its `volumes:`
+#   - /path/to/radon-ai-vision/dist:/var/www/radonaix:ro
+# and set the conf upstream to `server api:8000;`
+```
+
+**3) CORS** — with a single origin you can drop the cross-origin allowance entirely, or
+just set `CORS_ORIGINS=https://10.200.36.156` to be safe. No `:3000`/`:8080` anywhere.
+
+Now `https://10.200.36.156` loads the app; its `/api/...` calls are proxied to gunicorn.
+Re-run `npm run build` + redeploy `dist/` whenever the UI changes.
 
 ---
 
