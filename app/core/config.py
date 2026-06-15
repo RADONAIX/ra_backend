@@ -67,14 +67,17 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # --- Redis (cache + Celery broker/result backend) ----------------------
-    # ACTIVE: backs the bulk-export jobs (exports module). The Celery worker
-    # consumes export tasks; the cache helper is still optional. Requires Redis
-    # + a running worker (`make worker` / docker-compose `worker` service).
+    # ONLY needed when EXPORTS_ENABLED=true: Redis is the Celery broker for the
+    # bulk-export jobs. With exports disabled the app never connects to Redis,
+    # so these values are inert. (The cache helper remains optional.)
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
 
     # --- Bulk exports (async report downloads) -----------------------------
+    # Master switch. When false, every /exports route returns 503 and no Redis/
+    # Celery worker is required. Turn on only after Redis + the worker are running.
+    exports_enabled: bool = True
     export_retention_days: int = 7
     export_max_concurrent_per_user: int = 3
     export_max_date_span_days: int = 31

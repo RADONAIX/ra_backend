@@ -1,8 +1,12 @@
-"""Unit tests for the bulk-export query builders (pure, no I/O)."""
+"""Unit tests for the bulk-export query builders (pure, no I/O) + the
+EXPORTS_ENABLED gate."""
 
 from __future__ import annotations
 
 import datetime as dt
+
+import httpx
+import pytest
 
 from app.modules.reporting import service as reporting
 
@@ -51,3 +55,19 @@ def test_count_and_kpi_wrap_the_export_select():
     _, ksql, _ = reporting.kpi_query("air_reconciliation", date_from=d0, date_to=d1)
     assert "countIf(reconciliation_status = 'AMOUNT_MISMATCH')" in ksql
     assert "FROM (" in ksql and ") AS _k" in ksql
+
+
+@pytest.mark.asyncio
+async def test_exports_routes_503_when_disabled(monkeypatch):
+    """With EXPORTS_ENABLED=false the whole /exports module returns 503."""
+    from app.core.config import settings
+    from app.main import app
+
+    monkeypatch.setattr(settings, "exports_enabled", False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        listed = await client.get("/api/exports")
+        created = await client.post("/api/exports", json={})
+    for resp in (listed, created):
+        assert resp.status_code == 503
+        assert resp.json()["error"]["code"] == "exports_disabled"

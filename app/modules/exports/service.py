@@ -22,6 +22,11 @@ log = get_logger("exports")
 _ACTIVE_STATUSES = ("Queued", "Running")
 
 
+class ExportsDisabledError(AppError):
+    status_code = 503
+    code = "exports_disabled"
+
+
 class TooManyJobsError(AppError):
     status_code = 429
     code = "too_many_jobs"

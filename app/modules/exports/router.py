@@ -5,11 +5,21 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from app.core.config import settings
 from app.core.deps import DbSession, PageParams, Principal, require
 from app.core.rbac import PermKey, RoleSlug
 from app.modules.exports import schemas, service
 
-router = APIRouter(prefix="/exports", tags=["exports"])
+
+def _require_exports_enabled() -> None:
+    """Gate the whole module: 503 when bulk exports are turned off (no Redis/worker)."""
+    if not settings.exports_enabled:
+        raise service.ExportsDisabledError("Bulk exports are disabled on this deployment.")
+
+
+router = APIRouter(
+    prefix="/exports", tags=["exports"], dependencies=[Depends(_require_exports_enabled)]
+)
 
 
 @router.post("", response_model=schemas.ExportJobRow, status_code=201)

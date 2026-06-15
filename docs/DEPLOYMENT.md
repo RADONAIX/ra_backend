@@ -4,31 +4,34 @@ Two supported tracks; pick one based on whether the client allows Docker:
 - **Track A — Docker Compose** (recommended; self-contained)
 - **Track B — bare VM + systemd** (no Docker)
 
-Both run the **same three processes** plus a TLS proxy:
+Default deployment is **API-only** (`EXPORTS_ENABLED=false`):
 
 ```
             ┌─────────── nginx (TLS :443) ───────────┐
 client ───▶ │  https://ra.example.com  →  api :8000   │
             └────────────────────────────────────────┘
-                 api (gunicorn)        worker (celery)
-                        │                     │
-                        └──────── Redis ──────┘         (broker for /exports jobs)
+                 api (gunicorn)
                         │
                  app DB (Postgres, administration schema)
                         │
    external read-only:  ClickHouse · ra_postgres · bi_postgres  (the ra-platform)
+
+   (optional, only when EXPORTS_ENABLED=true:  Redis + worker (celery) for /exports)
 ```
 
-> ⚠️ The **worker + Redis are mandatory** — the bulk-export feature (`/exports`) queues
-> jobs through Redis; without the worker, jobs stay `Queued` forever. Running only
-> `gunicorn` is **not** a complete deployment.
+> The bulk-export feature (`/exports`) is **off by default** (`EXPORTS_ENABLED=false`)
+> → those routes return `503` and **no Redis/worker is needed**. Run only `api`
+> (+ nginx + app DB). To turn exports on later, see "Enable bulk exports" below.
+> Airflow is optional too (`AIRFLOW_ENABLED=false`) — pipeline retry/replay actions
+> simply no-op when it's off.
 
 ---
 
 ## 0. Shared prerequisites (both tracks)
 
 1. **VM**: Linux, ≥2 vCPU / 4 GB. Open **80 + 443** to the world; keep **8000 / 5433 / 6379 closed** (firewall).
-2. **`.env`**: copy `deploy/.env.prod.example` → `.env` and fill it in. Critical:
+2. **`.env`**: copy `deploy/.env.prod.example` → **`.env` at the backend root** (the app, compose `env_file`, and systemd all read `<backend>/.env` — not `deploy/.env`). Fill it in. Critical:
+   - `EXPORTS_ENABLED=false` for an API-only deploy (default). Set `true` only after Redis + the worker are running.
    - Generate a real secret: `python -c "import secrets; print(secrets.token_urlsafe(48))"` → `JWT_SECRET`.
    - Change `BOOTSTRAP_ADMIN_PASSWORD`.
    - `ENVIRONMENT=production`, `DEBUG=false`.
@@ -52,15 +55,18 @@ cp deploy/.env.prod.example .env         # then edit (see §0.2)
 # Docker nginx: set the upstream in deploy/nginx/radonaix.conf to:  server api:8000;
 # Put TLS cert/key in deploy/nginx/certs/  (radonaix.crt, radonaix.key)
 
-# First boot (seeds the admin user):
-RUN_SEED=true docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# API-only (default, EXPORTS_ENABLED=false) — start only what's needed.
+# First boot seeds the admin user:
+RUN_SEED=true docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build api postgres nginx
 
 # Subsequent starts / after a pull:
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build api postgres nginx
 ```
 
-What this runs: `api` (gunicorn, tuned), `worker` (celery), `postgres`, `redis`, `nginx`.
-Migrations run automatically on boot (entrypoint → `alembic upgrade head`).
+What this runs: `api` (gunicorn, tuned), `postgres`, `nginx`. (Redis may start idle
+because `api` declares `depends_on: redis`; that's harmless — the worker is not
+started, and `/exports` returns 503.) Migrations run automatically on boot
+(entrypoint → `alembic upgrade head`).
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml ps     # status
@@ -96,11 +102,12 @@ sudo -u radonaix bash -lc '
   .venv/bin/python -m app.seed              # seed admin (first time only)
 '
 
-# 3) Services
-sudo cp deploy/systemd/radonaix-api.service deploy/systemd/radonaix-worker.service /etc/systemd/system/
+# 3) Services — API-only (default). The worker unit is only needed for exports.
+sudo cp deploy/systemd/radonaix-api.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now radonaix-api radonaix-worker
-sudo systemctl status radonaix-api radonaix-worker
+sudo systemctl enable --now radonaix-api
+sudo systemctl status radonaix-api
+# (No Redis required for API-only — you can skip installing redis-server above.)
 
 # 4) nginx (TLS) — upstream is 127.0.0.1:8000 (default in the conf)
 sudo mkdir -p /etc/nginx/certs   # place radonaix.crt + radonaix.key here
@@ -111,6 +118,17 @@ sudo nginx -t && sudo systemctl reload nginx
 
 Logs: `journalctl -u radonaix-api -f` / `journalctl -u radonaix-worker -f`.
 Tune workers: edit `Environment=WEB_CONCURRENCY=` (API) / `--concurrency=` (worker) → `daemon-reload` + restart.
+
+---
+
+## Enable bulk exports later (optional)
+
+The `/exports` module (async million-row report downloads) is off by default. To turn it on:
+1. Set `EXPORTS_ENABLED=true` in `.env`, and ensure `REDIS_URL` / `CELERY_*` point at a reachable Redis.
+2. Run **Redis** + the **Celery worker**:
+   - **Docker**: include all services — `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` (adds `worker` + `redis`).
+   - **Bare VM**: `sudo apt install -y redis-server && sudo systemctl enable --now redis-server`; then `sudo cp deploy/systemd/radonaix-worker.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now radonaix-worker`.
+3. Restart the API so it picks up the flag. `/exports` now serves jobs instead of 503.
 
 ---
 

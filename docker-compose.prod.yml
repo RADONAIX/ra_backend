@@ -5,6 +5,10 @@
 # First boot only (creates the admin user): prepend RUN_SEED=true:
 #   RUN_SEED=true docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
+# API-only (default, EXPORTS_ENABLED=false) — start just what you need:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d api postgres nginx
+# (worker + redis are only needed when EXPORTS_ENABLED=true; see docs/DEPLOYMENT.md).
+#
 # Adds nginx (TLS) in front of the API, tunes gunicorn, and disables auto-seed.
 # NOTE: the base compose publishes api:8000 / postgres:5433 / redis:6379 to the
 # host for dev convenience — on the VM, restrict those to 80/443 only via the
