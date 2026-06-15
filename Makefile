@@ -40,3 +40,6 @@ docker-down: ## Stop the stack
 
 docker-logs: ## Tail logs
 	docker compose logs -f api worker
+
+tls-selfsigned: ## Generate a self-signed TLS cert (HOST=, OUT= to override)
+	bash deploy/gen-selfsigned-cert.sh "$(HOST)" "$(OUT)"

@@ -132,11 +132,32 @@ The `/exports` module (async million-row report downloads) is off by default. To
 
 ---
 
-## 3. TLS
+## 3. TLS (self-signed — internal / IP deployment)
 
-- **Client cert**: drop `radonaix.crt` + `radonaix.key` where the conf expects them
-  (Docker: `deploy/nginx/certs/`; bare VM: `/etc/nginx/certs/`).
-- **Let's Encrypt** (bare VM): `sudo apt install -y certbot python3-certbot-nginx && sudo certbot --nginx -d ra.example.com` — it edits the conf + auto-renews.
+This is an internal deployment (no public domain → Let's Encrypt isn't an option), so
+use a **self-signed** cert. Generate it with the helper (CN/SAN = host or IP):
+
+```bash
+# Bare VM (writes to /etc/nginx/certs):
+sudo make tls-selfsigned                      # defaults to 10.200.36.156
+#   or: sudo bash deploy/gen-selfsigned-cert.sh <host-or-ip> /etc/nginx/certs
+sudo nginx -t && sudo systemctl reload nginx
+
+# Docker (writes into the mounted certs dir):
+make tls-selfsigned OUT=deploy/nginx/certs
+docker compose -f docker-compose.yml -f docker-compose.prod.yml restart nginx
+```
+
+The conf's `server_name` is `10.200.36.156` and it reads `radonaix.crt` + `radonaix.key`
+from `/etc/nginx/certs` (bare VM) / the mounted `deploy/nginx/certs` (Docker). Browsers show
+a one-time "not secure" warning for self-signed certs — accept it, or distribute
+`radonaix.crt` for clients to trust.
+
+**Have a public domain instead?** `sudo apt install -y certbot python3-certbot-nginx && sudo certbot --nginx -d <domain>` (free, trusted, auto-renews).
+
+> **UI note**: with the backend now behind TLS, point the UI's `VITE_API_BASE_URL` at
+> `https://10.200.36.156/api` (through nginx, not `:8000`), and keep `CORS_ORIGINS` set to
+> the UI's own origin (e.g. `http://10.200.36.156:3000`).
 
 ---
 
