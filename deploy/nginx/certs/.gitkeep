@@ -1,0 +1,4 @@
+# Place TLS cert + key here for the Docker nginx service:
+#   radonaix.crt  radonaix.key
+# (Bare-VM track uses /etc/nginx/certs instead.) This dir is git-kept but the
+# cert/key themselves must NOT be committed.

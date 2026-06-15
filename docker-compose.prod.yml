@@ -1,0 +1,53 @@
+# Production overrides — layer ON TOP of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# First boot only (creates the admin user): prepend RUN_SEED=true:
+#   RUN_SEED=true docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Adds nginx (TLS) in front of the API, tunes gunicorn, and disables auto-seed.
+# NOTE: the base compose publishes api:8000 / postgres:5433 / redis:6379 to the
+# host for dev convenience — on the VM, restrict those to 80/443 only via the
+# firewall (or bind them to 127.0.0.1 in the base file). nginx reaches the API
+# over the internal compose network as `api:8000`.
+services:
+  api:
+    environment:
+      WEB_CONCURRENCY: "4"            # gunicorn workers (~2*CPU+1); no -w below
+      RUN_SEED: "${RUN_SEED:-false}"  # true only on first boot
+    command:
+      - gunicorn
+      - app.main:app
+      - -k
+      - uvicorn.workers.UvicornWorker
+      - -b
+      - 0.0.0.0:8000
+      - --timeout
+      - "60"
+      - --graceful-timeout
+      - "30"
+      - --max-requests
+      - "2000"
+      - --max-requests-jitter
+      - "200"
+      - --access-logfile
+      - "-"
+      - --error-logfile
+      - "-"
+
+  worker:
+    environment:
+      RUN_SEED: "false"
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # For Docker, set the upstream in this file to `server api:8000;`.
+      - ./deploy/nginx/radonaix.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    restart: unless-stopped

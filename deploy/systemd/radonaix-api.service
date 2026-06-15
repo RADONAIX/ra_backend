@@ -1,0 +1,25 @@
+[Unit]
+Description=RADONAIX backend API (gunicorn + uvicorn workers)
+After=network-online.target redis-server.service
+Wants=network-online.target redis-server.service
+
+[Service]
+Type=exec
+User=radonaix
+Group=radonaix
+WorkingDirectory=/opt/radonaix/backend
+EnvironmentFile=/opt/radonaix/backend/.env
+# Bind to localhost only — nginx terminates TLS and proxies to it.
+# WEB_CONCURRENCY controls worker count (~2*CPU+1); no -w so it's honoured.
+Environment=WEB_CONCURRENCY=4
+ExecStart=/opt/radonaix/backend/.venv/bin/gunicorn app.main:app \
+    -k uvicorn.workers.UvicornWorker \
+    -b 127.0.0.1:8000 \
+    --timeout 60 --graceful-timeout 30 \
+    --max-requests 2000 --max-requests-jitter 200 \
+    --access-logfile - --error-logfile -
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

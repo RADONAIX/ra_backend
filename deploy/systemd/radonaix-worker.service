@@ -1,0 +1,18 @@
+[Unit]
+Description=RADONAIX backend Celery worker (bulk exports)
+After=network-online.target redis-server.service
+Wants=network-online.target redis-server.service
+
+[Service]
+Type=exec
+User=radonaix
+Group=radonaix
+WorkingDirectory=/opt/radonaix/backend
+EnvironmentFile=/opt/radonaix/backend/.env
+ExecStart=/opt/radonaix/backend/.venv/bin/celery -A app.workers.celery_app:celery worker \
+    --loglevel=info --concurrency=4
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
