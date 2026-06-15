@@ -176,18 +176,18 @@ VITE_AUTH_API_BASE=
 VITE_PIPELINES_API_BASE=
 ```
 ```bash
-npm ci && npm run build      # produces dist/
+npm ci && npm run build      # SPA mode -> produces dist/client/ (static, with _shell.html)
 ```
 
 **2) Deploy the build** where nginx's `root` points (`/var/www/radonaix`):
 ```bash
 # Bare VM:
 sudo mkdir -p /var/www/radonaix
-sudo rsync -a --delete dist/ /var/www/radonaix/
+sudo rsync -a --delete dist/client/ /var/www/radonaix/   # note: dist/client/ (SPA mode)
 sudo nginx -t && sudo systemctl reload nginx
 
 # Docker: mount the build into the nginx service, e.g. add under its `volumes:`
-#   - /path/to/radon-ai-vision/dist:/var/www/radonaix:ro
+#   - /path/to/radon-ai-vision/dist/client:/var/www/radonaix:ro
 # and set the conf upstream to `server api:8000;`
 ```
 
